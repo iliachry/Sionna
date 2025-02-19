@@ -14,14 +14,15 @@ class UAVRLAgent(tf.keras.Model):
         super().__init__()
         self.policy_net = tf.keras.Sequential([
             tf.keras.layers.Dense(64, activation='relu'),
+            tf.keras.layers.LayerNormalization(),
             tf.keras.layers.Dense(32, activation='relu'),
             tf.keras.layers.Dense(3, activation='tanh')  # Normalized actions [-1, 1]
         ])
         self.optimizer = tf.keras.optimizers.legacy.Adam(0.001)
-        self.action_std = 2.0  # Initial exploration noise
+        self.action_std = 0.02  # Initial exploration noise
 
     def call(self, state):
-        return self.policy_net(state) * 5.0  # Scale actions to ±5 meters
+        return self.policy_net(state) * 0.5  # Scale actions to ±0.1 meters
 
 class SINROptimizationEnv:
     def __init__(self):
@@ -33,7 +34,7 @@ class SINROptimizationEnv:
         self.scene.tx_array = PlanarArray(num_rows=1, num_cols=1,
                                         vertical_spacing=0.5,
                                         horizontal_spacing=0.5,
-                                        pattern="tr38901",
+                                        pattern="dipole",
                                         polarization="V")
         self.scene.rx_array = PlanarArray(num_rows=1, num_cols=1,
                                         vertical_spacing=0.5,
@@ -52,11 +53,10 @@ class SINROptimizationEnv:
 
     def reset(self):
         """Reset environment to initial state"""
-        self.uav.position = np.array([0.0, 0.0, 50.0], dtype=np.float32)
-        for rx in self.receivers:
-            rx.position = np.array([np.random.uniform(-10, 10), 
-                                  np.random.uniform(-10, 10), 
-                                  1.5], dtype=np.float32)
+        self.uav.position = np.array([8.5, 21, 27], dtype=np.float32)
+        self.receivers[0].position = [90,90,1.5]
+        self.receivers[1].position = [50,85,1.5]
+        self.receivers[2].position = [45,45,1.5]
         return self._get_state()
 
     def _get_state(self):
@@ -76,10 +76,9 @@ class SINROptimizationEnv:
 
     def _calculate_sinr(self):
         """Compute SINR for all receivers"""
-        fft_size = 48
+        fft_size = 1
         subcarrier_spacing = 15e3
-        channels = []
-        
+        channels = []        
 
         paths = self.scene.compute_paths(max_depth=3, num_samples=1e6)
         a, tau = paths.cir()
@@ -88,7 +87,7 @@ class SINROptimizationEnv:
         freqs = subcarrier_frequencies(fft_size, subcarrier_spacing)
 
         # Compute the frequency-domain channel
-        h_freq = cir_to_ofdm_channel(freqs, a, tau, normalize=True)
+        h_freq = cir_to_ofdm_channel(freqs, a, tau, normalize=False)
 
         # Extract channels for each receiver by expanding the corresponding dimension
         h_freq_0 = tf.expand_dims(h_freq[:, 0, :, :, :, :, :], axis=1)
@@ -100,6 +99,24 @@ class SINROptimizationEnv:
         channel_1 = tf.reduce_mean(tf.abs(h_freq_1) ** 2)
         channel_2 = tf.reduce_mean(tf.abs(h_freq_2) ** 2)
         channels = [channel_0, channel_1, channel_2]
+
+        channel_per_subcarrier_0 = tf.abs(h_freq_0) ** 2
+        channel_per_subcarrier_1 = tf.abs(h_freq_1) ** 2
+        channel_per_subcarrier_2 = tf.abs(h_freq_2) ** 2
+
+        
+        # print(f"Receiver 0 h: {h_freq_0.numpy()}")
+        # print(f"Receiver 1 h: {h_freq_1.numpy()}")
+        # print(f"Receiver 2 h: {h_freq_2.numpy()}")
+        # print("-------------------------------------------")
+        # print("Channel per subcarrier for receiver 0:", channel_per_subcarrier_0.numpy())
+        # print("Channel per subcarrier for receiver 1:", channel_per_subcarrier_1.numpy())
+        # print("Channel per subcarrier for receiver 2:", channel_per_subcarrier_2.numpy())
+        # print("-------------------------------------------")
+        # print(f"Receiver 0 ch: {channel_0.numpy():.2e}")
+        # print(f"Receiver 1 ch: {channel_1.numpy():.2e}")
+        # print(f"Receiver 2 ch: {channel_2.numpy():.2e}")
+        # print("-------------------------------------------")
         
         # Calculate SINR for each receiver
         epsilon = 1e-10  # Small constant to avoid log(0)
@@ -111,7 +128,7 @@ class SINROptimizationEnv:
             sinr_db = 10 * tf.math.log(sinr + epsilon) / tf.math.log(10.0)
             sinrs.append(sinr_db.numpy())
             
-        print(sinrs)
+        #print(sinrs)
         return sinrs
 
     def step(self, action):
@@ -121,19 +138,20 @@ class SINROptimizationEnv:
         
         # Move UAV with position constraints
         new_pos = self.uav.position + action
-        new_pos = np.clip(new_pos, [-200, -200, 20], [200, 200, 100])
+        new_pos = np.clip(new_pos, [0, 21, 27], [8.5, 30, 27])
         self.uav.position = new_pos
         
+        #print(new_pos)
         # Move receivers
-        self._move_receivers()
+        #self._move_receivers()
         
         # Calculate SINR and store
         sinr = self._calculate_sinr()
         self.sinr_history.append(sinr)
         
         # Reward is sum of SINRs with altitude penalty
-        reward = sum(sinr) - 0.1 * abs(action[2])
-        
+        reward = sum(sinr) #- 0.1 * abs(action[2])
+        #print(reward)
         return self._get_state(), reward, sinr
 
 def train_rl_agent():
@@ -141,8 +159,8 @@ def train_rl_agent():
     agent = UAVRLAgent()
     
     # Training parameters
-    num_episodes = 5
-    steps_per_episode = 15
+    num_episodes = 30
+    steps_per_episode = 20
     gamma = 0.99
     
     for episode in range(num_episodes):
@@ -156,7 +174,12 @@ def train_rl_agent():
             action = agent(state[None, ...])[0]  # Add batch dimension
             noise = tf.random.normal(action.shape, stddev=agent.action_std)
             noisy_action = action + noise
+            #noisy_action = tf.clip_by_value(noisy_action, -0.1, 0.1)
+
             
+            #print(action)
+            #print(noisy_action)
+
             # Step environment
             next_state, reward, sinr = env.step(noisy_action)
             
@@ -188,6 +211,7 @@ def train_rl_agent():
             policy_loss = -tf.reduce_mean(tf.stack(log_probs) * returns)
         
         grads = tape.gradient(policy_loss, agent.trainable_variables)
+        grads, _ = tf.clip_by_global_norm(grads, 5.0)
         agent.optimizer.apply_gradients(zip(grads, agent.trainable_variables))
         
         # Decay exploration noise
