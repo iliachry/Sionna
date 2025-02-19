@@ -42,9 +42,24 @@ class SINROptimizationEnv:
                                         polarization="V")
         
         # Initialize devices
-        self.uav = Transmitter(name="uav", position=[0.0, 0.0, 50.0])
-        self.receivers = [Receiver(name=f"ue_{i}", position=[0.0, 0.0, 1.5]) for i in range(3)]
+        self.uav = Transmitter(name="uav", position=[8.5,21,27])
         self.scene.add(self.uav)
+        # Create receivers
+        rx_0 = Receiver(name="rx0",
+                    position=[90,90,1.5],
+                    orientation=[0,0,0])
+
+        rx_1 = Receiver(name="rx1",
+                    position=[50,85,1.5],
+                    orientation=[0,0,0])
+
+        rx_2 = Receiver(name="rx2",
+                    position=[45,45,1.5],
+                    orientation=[0,0,0])
+        
+        self.receivers = [rx_0, rx_1, rx_2]
+
+        # Add receiver instances to scene
         for rx in self.receivers:
             self.scene.add(rx)
         
@@ -52,11 +67,11 @@ class SINROptimizationEnv:
 
     def reset(self):
         """Reset environment to initial state"""
-        self.uav.position = np.array([0.0, 0.0, 50.0], dtype=np.float32)
-        for rx in self.receivers:
-            rx.position = np.array([np.random.uniform(-100, 100), 
-                                  np.random.uniform(-100, 100), 
-                                  1.5], dtype=np.float32)
+        self.uav.position = np.array([8.5,21,27], dtype=np.float32)
+        self.receivers[0].position = [90,90,1.5]
+        self.receivers[1].position = [50,85,1.5]
+        self.receivers[2].position = [45,45,1.5]
+
         return self._get_state()
 
     def _get_state(self):
@@ -79,21 +94,55 @@ class SINROptimizationEnv:
         fft_size = 48
         subcarrier_spacing = 15e3
         channels = []
-        
 
-        paths = self.scene.compute_paths(max_depth=3, diffraction=True)
+        # Compute the channel paths and corresponding CIR parameters
+        paths = self.scene.compute_paths(max_depth=3, num_samples=1e6)
         a, tau = paths.cir()
+
+        # Define OFDM parameters
         freqs = subcarrier_frequencies(fft_size, subcarrier_spacing)
-        channel = cir_to_ofdm_channel(freqs, a, tau, normalize=True)
-        channels.append(tf.reduce_mean(tf.abs(channel)**2))
-        
+
+        # Compute the frequency-domain channel
+        h_freq = cir_to_ofdm_channel(freqs, a, tau, normalize=True)
+
+        # Extract channels for each receiver by expanding the corresponding dimension
+        h_freq_0 = tf.expand_dims(h_freq[:, 0, :, :, :, :, :], axis=1)
+        h_freq_1 = tf.expand_dims(h_freq[:, 1, :, :, :, :, :], axis=1)
+        h_freq_2 = tf.expand_dims(h_freq[:, 2, :, :, :, :, :], axis=1)
+
+        # Compute the channel gain as the average of the absolute squared channel coefficients
+        channel_0 = tf.reduce_mean(tf.abs(h_freq_0) ** 2)
+        channel_1 = tf.reduce_mean(tf.abs(h_freq_1) ** 2)
+        channel_2 = tf.reduce_mean(tf.abs(h_freq_2) ** 2)
+        channels = [channel_0, channel_1, channel_2]
+
+        channel_per_subcarrier_0 = tf.abs(h_freq_0) ** 2
+        channel_per_subcarrier_1 = tf.abs(h_freq_1) ** 2
+        channel_per_subcarrier_2 = tf.abs(h_freq_2) ** 2
+
+        print("Channel per subcarrier for receiver 0:", channel_per_subcarrier_0.numpy())
+        print("Channel per subcarrier for receiver 1:", channel_per_subcarrier_1.numpy())
+        print("Channel per subcarrier for receiver 2:", channel_per_subcarrier_2.numpy())
+        print("-------------------------------------------")
+        print(f"Receiver 0 h: {h_freq_0.numpy()}")
+        print(f"Receiver 1 h: {h_freq_1.numpy()}")
+        print(f"Receiver 2 h: {h_freq_2.numpy()}")
+        print("-------------------------------------------")
+        print(f"Receiver 0 ch: {channel_0.numpy():.2e}")
+        print(f"Receiver 1 ch: {channel_1.numpy():.2e}")
+        print(f"Receiver 2 ch: {channel_2.numpy():.2e}")
+        print("-------------------------------------------")
+
         # Calculate SINR for each receiver
-        epsilon = 1e-10  # Small constant to avoid log(0)
+        epsilon = 1e-10  # Small constant to avoid division or log of zero
         sinrs = []
         for i in range(3):
             desired = tf.maximum(channels[i], epsilon)
-            interference = sum(channels[:i] + channels[i+1:])
-            sinr = desired / (self.noise_power + tf.maximum(interference, epsilon))
+            # Sum the gains of the other receivers as interference
+            interference = sum([channels[j] for j in range(3) if j != i])
+            interference = tf.maximum(interference, epsilon)
+            
+            sinr = desired / (self.noise_power)
             sinr_db = 10 * tf.math.log(sinr + epsilon) / tf.math.log(10.0)
             sinrs.append(sinr_db.numpy())
             
