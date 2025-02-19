@@ -54,8 +54,8 @@ class SINROptimizationEnv:
         """Reset environment to initial state"""
         self.uav.position = np.array([0.0, 0.0, 50.0], dtype=np.float32)
         for rx in self.receivers:
-            rx.position = np.array([np.random.uniform(-100, 100), 
-                                  np.random.uniform(-100, 100), 
+            rx.position = np.array([np.random.uniform(-10, 10), 
+                                  np.random.uniform(-10, 10), 
                                   1.5], dtype=np.float32)
         return self._get_state()
 
@@ -81,11 +81,25 @@ class SINROptimizationEnv:
         channels = []
         
 
-        paths = self.scene.compute_paths(max_depth=3, diffraction=True)
+        paths = self.scene.compute_paths(max_depth=3, num_samples=1e6)
         a, tau = paths.cir()
+
+        # Define OFDM parameters
         freqs = subcarrier_frequencies(fft_size, subcarrier_spacing)
-        channel = cir_to_ofdm_channel(freqs, a, tau, normalize=True)
-        channels.append(tf.reduce_mean(tf.abs(channel)**2))
+
+        # Compute the frequency-domain channel
+        h_freq = cir_to_ofdm_channel(freqs, a, tau, normalize=True)
+
+        # Extract channels for each receiver by expanding the corresponding dimension
+        h_freq_0 = tf.expand_dims(h_freq[:, 0, :, :, :, :, :], axis=1)
+        h_freq_1 = tf.expand_dims(h_freq[:, 1, :, :, :, :, :], axis=1)
+        h_freq_2 = tf.expand_dims(h_freq[:, 2, :, :, :, :, :], axis=1)
+
+        # Compute the channel gain as the average of the absolute squared channel coefficients
+        channel_0 = tf.reduce_mean(tf.abs(h_freq_0) ** 2)
+        channel_1 = tf.reduce_mean(tf.abs(h_freq_1) ** 2)
+        channel_2 = tf.reduce_mean(tf.abs(h_freq_2) ** 2)
+        channels = [channel_0, channel_1, channel_2]
         
         # Calculate SINR for each receiver
         epsilon = 1e-10  # Small constant to avoid log(0)
@@ -97,6 +111,7 @@ class SINROptimizationEnv:
             sinr_db = 10 * tf.math.log(sinr + epsilon) / tf.math.log(10.0)
             sinrs.append(sinr_db.numpy())
             
+        print(sinrs)
         return sinrs
 
     def step(self, action):
