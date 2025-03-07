@@ -1,7 +1,7 @@
 import os
 
 # Enable GPU usage
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"  # Not strictly necessary for one GPU
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 # Check if GPU is available
 import tensorflow as tf
@@ -164,7 +164,6 @@ class SINROptimizationEnv(gym.Env):
             total_data_rates.append(total_data_rate.numpy())
             sinrs.append(sinr_db.numpy())
 
-        #print(sinrs)
         return sinrs, total_data_rates
 
     def step(self, action):
@@ -211,11 +210,11 @@ def train_rl_agent():
     env = VecNormalize(env, norm_obs=True, norm_reward=True, clip_obs=10.0)
 
     model = PPO("MlpPolicy", env, verbose=0,
-                learning_rate=5e-4,  # Reduce if learning is unstable
-                gamma=0.99,  # Discount factor (lower if rewards are sparse)
-                n_steps=128,  # Increase if observations are complex
-                batch_size=32,  # Smaller batch size can help in small environments
-                clip_range=0.2,  # Reduce if training is unstable
+                learning_rate=5e-4,
+                gamma=0.99,
+                n_steps=128,
+                batch_size=32,
+                clip_range=0.2, 
                 ent_coef=0.005,
                 n_epochs=3)
 
@@ -239,16 +238,14 @@ def train_rl_agent():
 
     csv_filename = "data.csv"
 
-    # Writing to CSV
     with open(csv_filename, "w", newline="") as file:
         writer = csv.writer(file)
         
-        # Writing Header
         header = ["Step", "State", "Action", "SINR1", "SINR2", "SINR3", "C1", "C2", "C3"]
         writer.writerow(header)
         
         # Writing Data
-        for i in range(len(states)):  # Iterate over index
+        for i in range(len(states)):
             row = [
                 steps[i],
                 states[i],
@@ -283,7 +280,7 @@ def train_rl_agent():
     plt.clf()
 
     plt.figure(figsize=(10,5))
-    for i in range(sinr_history.shape[1]):  # Iterate over timesteps
+    for i in range(sinr_history.shape[1]):
         plt.plot(sinr_history[:, i], label=f"Receiver {i+1}", alpha=0.7)
     plt.xlabel("Episode")
     plt.ylabel("SINR Value")
@@ -292,8 +289,8 @@ def train_rl_agent():
     plt.savefig("sinr_history.png")
 
 
-    env.training = False  # Disable training mode
-    env.norm_reward = False  # Don't normalize rewards during testing
+    env.training = False
+    env.norm_reward = False 
     
     obs = env.reset()
 
