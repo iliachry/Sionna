@@ -18,6 +18,7 @@ else:
 import numpy as np
 import csv
 import matplotlib.pyplot as plt
+import time
 
 import sionna
 from sionna.rt import load_scene, Transmitter, Receiver, PlanarArray
@@ -122,8 +123,11 @@ class SINROptimizationEnv(gym.Env):
         fft_size = 1
         subcarrier_spacing = 15e3
         channels = []
+        
+        start_time = time.time()
+        paths = self.scene.compute_paths(max_depth=2, num_samples=1e6, check_scene=False)
+        print(f"Path computation time: {time.time() - start_time:.2f} seconds")
 
-        paths = self.scene.compute_paths(max_depth=2, num_samples=1e6)
         a, tau = paths.cir()
 
         # Define OFDM parameters
