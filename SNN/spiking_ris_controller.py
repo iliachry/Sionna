@@ -121,8 +121,22 @@ class RISEnvironment():
         self.scene.frequency = 2.4e9
 
 
-    def position_is_blocked(self, x, y, building_bounds):
-        for (x1, y1, x2, y2) in building_bounds:
+    def position_is_blocked(self, x, y):
+
+        # Define invalid positions for receivers
+        # (x1, y1, x2, y2)
+        # (x1, y1) - bottom-left 
+        # (x2, y2) - top-right
+        invalid_positions = [
+            (28, 50, 80, 5),
+            (28, -5, 80, -50),
+            (-20, 50, 20, 5),
+            (-20, -5, 20, -50),
+            (-80, 50, -28, 5),
+            (-80, -5, -28, -50)
+        ]
+
+        for (x1, y1, x2, y2) in invalid_positions:
             if x1 <= x < x2 and y2 <= y < y1:
                 return True
         return False
@@ -133,30 +147,38 @@ class RISEnvironment():
         max_abs_y = 50
         z = 5
 
-        # Define building bounds
-        # (x1, y1, x2, y2)
-        # (x1, y1) - bottom-left 
-        # (x2, y2) - top-right
-        building_bounds = [
-            (28, 45, 68, 5),
-            (28, -5, 68, -45),
-            (-20, 45, 20, 5),
-            (-20, -5, 20, -45),
-            (-68, 45, -28, 5),
-            (-68, -5, -28, -45)
-        ]
-
         rx_positions = []
 
         for i in range(self.num_receivers):
             random_x = random.uniform(-max_abs_x, max_abs_x)
             random_y = random.uniform(-max_abs_y, max_abs_y)
-            while self.position_is_blocked(random_x, random_y, building_bounds):
+            while self.position_is_blocked(random_x, random_y):
                 random_x = random.uniform(-max_abs_x, max_abs_x)
                 random_y = random.uniform(-max_abs_y, max_abs_y)
             rx_positions.append([random_x, random_y, z])
         return rx_positions
+    
 
+    def remove_nans(self, tensor):
+        if tensor.dtype in (tf.complex64, tf.complex128):
+            # Complex tensor handling
+            real_part = tf.math.real(tensor)
+            imag_part = tf.math.imag(tensor)
+            is_nan = tf.math.logical_or(
+                tf.math.is_nan(real_part),
+                tf.math.is_nan(imag_part)
+            )
+        else:
+            # Float tensor handling
+            is_nan = tf.math.is_nan(tensor)
+        
+        # Create zeros with the same type as input tensor
+        zeros = tf.zeros_like(tensor)
+        
+        # Replace NaN values with zeros
+        cleaned_tensor = tf.where(is_nan, zeros, tensor)
+
+        return cleaned_tensor
 
     def update_rx_positions(self, rx_positions):
         for i in range(self.num_receivers):
@@ -173,22 +195,20 @@ class RISEnvironment():
 
         # Compute the frequency-domain channel
         h_freq = cir_to_ofdm_channel(freqs, a, tau, normalize=False)
-        #sn.rt.Scene.render_to_file(self=scene, camera="Cam", paths=paths, filename="scene.png")
 
         for i in range(self.num_receivers):
-            if rx_using_ris[i] == ris:  # Matches behavior in original function
-                h_freq_i = h_freq[:, i, :, :, :, :, :]  # No need to expand dims
-                channel_i = tf.reduce_mean(tf.abs(h_freq_i) ** 2)  # Compute gain
+            if rx_using_ris[i] == ris:
+                h_freq_i = h_freq[:, i, :, :, :, :, :]
+                channel_i = tf.reduce_mean(tf.abs(h_freq_i) ** 2)
                 channels.append(channel_i)
 
         return channels    
 
 
     def compute_data_rates(self, channels):
-        epsilon = 1e-10
+        epsilon = 1e-11
         total_data_rates = []
         noise_power = 1e-7
-
         for i in range(len(channels)):
             desired = tf.maximum(channels[i], epsilon)
             sinr = desired / (noise_power + epsilon)
@@ -200,17 +220,20 @@ class RISEnvironment():
     # Utility function to compute received power
     def calculate_reward(self, rx_using_ris):
         
-        paths = self.scene.compute_paths(max_depth=2, los=True, reflection=True, ris=True)
-        print(paths.a)
-        nan_mask = tf.math.is_nan(paths.a)
-        contains_nan = tf.reduce_any(nan_mask)
-        print("Contains NaN:", contains_nan.numpy())
-        wait = input("PRESS ENTER TO CONTINUE.")
+        paths = self.scene.compute_paths(max_depth=3, los=True, reflection=True, ris=True)
+
+        # sn.rt.Scene.render_to_file(self=self.scene, camera="Cam", paths=paths, filename="scene.png")
+
         # Only paths that are from LOS and reflection
         a_no_ris, tau_no_ris = paths.cir(los=True, reflection=True, ris=False, num_paths=3)
 
         # Only paths that are from reflection and RIS
         a_ris_reflection, tau_ris_reflection = paths.cir(los=False, reflection=True, ris=True, num_paths=3)
+        
+        # Replace nan values with zeros. Only necessary for RIS
+        # Nan values do not appear in other paths. Maybe Sionna bug?
+        a_ris_reflection = self.remove_nans(a_ris_reflection)
+        tau_ris_reflection = self.remove_nans(tau_ris_reflection)
 
         # Only paths that are from reflection
         a_only_reflection, tau_only_reflection = paths.cir(los=False, reflection=True, ris=False, num_paths=3)
@@ -237,7 +260,7 @@ class RISEnvironment():
         total_data_rates = self.compute_data_rates(channels)
         total_data_rates_ris = self.compute_data_rates(channels_ris)
 
-        return total_data_rates, total_data_rates_ris # Sum of squared magnitudes = received power
+        return total_data_rates, total_data_rates_ris
 
 # Convert tensor of actions to phase values
 def action_to_phase(action):
@@ -247,19 +270,19 @@ def action_to_phase(action):
 
 # Initialize the RIS controller and optimizer
 
-num_receivers = 4
+num_receivers = 3
 ris_dims = [3, 3]
 input_size = num_receivers * 3 + num_receivers
 output_size = ris_dims[0] * ris_dims[1]
 
 net = RISController(input_size=input_size, output_size=output_size)
-env = RISEnvironment(num_receivers=4, ris_dims=[3, 3])
+env = RISEnvironment(num_receivers=num_receivers, ris_dims=[3, 3])
 
 optimizer = torch.optim.Adam(net.parameters(), lr=0.001)
 
 # Training loop
-num_steps = 2000
-batch_size = 32
+num_steps = 20000
+batch_size = 128
 
 log_prob_batch = []
 action_batch = []
@@ -274,7 +297,8 @@ for step in range(num_steps):
     env.update_rx_positions(rx_pos)
 
     # Generate dummy association matrix randomly
-    rx_using_ris = [random.choice([0, 1]) for _ in range(num_receivers)]
+    rx_using_ris = [1] + [random.choice([0, 1]) for _ in range(num_receivers - 1)]
+    random.shuffle(rx_using_ris)
 
     rx_pos_tensor = torch.tensor(rx_pos, dtype=torch.float32).flatten()
     rx_using_ris_tensor = torch.tensor(rx_using_ris, dtype=torch.float32).flatten()
@@ -292,12 +316,10 @@ for step in range(num_steps):
 
     _, reward = env.calculate_reward(rx_using_ris)
 
-    print(state)
-    print(sum(reward))
 
     log_prob_batch.append(log_prob)
     action_batch.append(action)
-    reward_batch.append(sum(reward))
+    reward_batch.append(sum(reward)*100)
     state_batch.append(state)
 
     # Update the policy every batch_size steps
@@ -328,5 +350,4 @@ for step in range(num_steps):
 plt.plot(mean_rewards)
 plt.xlabel("Step")
 plt.ylabel("Mean Reward")
-plt.show()
 plt.savefig("mean_rewards.png")
