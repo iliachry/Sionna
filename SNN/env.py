@@ -1,0 +1,198 @@
+import sionna as sn
+from sionna.channel import cir_to_ofdm_channel, subcarrier_frequencies
+import tensorflow as tf
+import numpy as np
+import random
+
+# The environment class for the RIS simulation
+# This class is responsible for setting up the scene, generating receiver positions,
+# computing channel gains, and calculating rewards based on the received power.
+
+class RISEnvironment():
+    def __init__(self, num_receivers, ris_dims = [3, 3], abs_receiver_position_bounds = [10, 10], receiver_height = 5):
+
+        self.num_receivers = num_receivers
+        self.abs_receiver_position_bounds = abs_receiver_position_bounds # [70, 45] is maximum, derived from scene
+        self.receiver_height = receiver_height
+
+        self.scene = sn.rt.load_scene(sn.rt.scene.simple_street_canyon)
+        self.scene.tx_array = sn.rt.PlanarArray(num_rows=8,
+                          num_cols=2,
+                          vertical_spacing=0.7,
+                          horizontal_spacing=0.5,
+                          pattern="tr38901",
+                          polarization="VH")
+        self.scene.rx_array = sn.rt.PlanarArray(num_rows=1,
+                          num_cols=1,
+                          vertical_spacing=0.5,
+                          horizontal_spacing=0.5,
+                          pattern="dipole",
+                          polarization="cross")
+
+        camera = sn.rt.Camera("Cam", [0, 0, 300], orientation=[np.pi/2, np.pi/2, 0])
+        self.scene.add(camera)
+
+        tx = sn.rt.Transmitter(name="tx", position=[-32,10,32])
+        self.scene.add(tx)
+
+        self.rx_positions = self.generate_rx_positions()
+        for i in range(self.num_receivers):
+            rx = sn.rt.Receiver(name=f"rx{i}", position=self.rx_positions[i])
+            self.scene.add(rx) 
+
+        self.ris_position = [32, -9, 32]
+        self.ris_look_at = [-5, 30, 17]
+        self.ris_num_rows = ris_dims[0]
+        self.ris_num_cols = ris_dims[1]
+        
+        cell_grid = sn.rt.CellGrid(self.ris_num_rows, self.ris_num_cols)
+        ris = sn.rt.RIS(name="ris", position=self.ris_position, num_rows=self.ris_num_rows, num_cols=self.ris_num_cols, look_at=self.ris_look_at)
+        ris.phase_profile = sn.rt.DiscretePhaseProfile(cell_grid=cell_grid, num_modes=1, values=tf.zeros
+                                                            ([1, self.ris_num_rows, self.ris_num_cols]))
+        
+        self.scene.add(ris)
+        self.scene.frequency = 2.4e9
+
+
+    def position_is_blocked(self, x, y):
+
+        # Define invalid positions for receivers
+        # Buildings, space behind buildings etc.
+        # (x1, y1, x2, y2)
+        # (x1, y1) - bottom-left 
+        # (x2, y2) - top-right
+        invalid_positions = [
+            (28, 50, 80, 5),
+            (28, -5, 80, -50),
+            (-20, 50, 20, 5),
+            (-20, -5, 20, -50),
+            (-80, 50, -28, 5),
+            (-80, -5, -28, -50)
+        ]
+
+        for (x1, y1, x2, y2) in invalid_positions:
+            if x1 <= x <= x2 and y2 <= y <= y1:
+                return True
+        return False
+
+
+    def generate_rx_positions(self):
+        max_abs_x = self.abs_receiver_position_bounds[0] # 70
+        max_abs_y = self.abs_receiver_position_bounds[1] # 45
+
+        rx_positions = []
+
+        for i in range(self.num_receivers):
+            random_x = random.randint(-max_abs_x, max_abs_x)
+            random_y = random.randint(-max_abs_y, max_abs_y)
+            while self.position_is_blocked(random_x, random_y):
+                random_x = random.randint(-max_abs_x, max_abs_x)
+                random_y = random.randint(-max_abs_y, max_abs_y)
+            rx_positions.append([random_x, random_y])
+        
+        return rx_positions
+    
+
+    def remove_nans(self, tensor):
+        if tensor.dtype in (tf.complex64, tf.complex128):
+            # Complex tensor handling
+            real_part = tf.math.real(tensor)
+            imag_part = tf.math.imag(tensor)
+            is_nan = tf.math.logical_or(
+                tf.math.is_nan(real_part),
+                tf.math.is_nan(imag_part)
+            )
+        else:
+            # Float tensor handling
+            is_nan = tf.math.is_nan(tensor)
+        
+        # Create zeros with the same type as input tensor
+        zeros = tf.zeros_like(tensor)
+        
+        # Replace NaN values with zeros
+        cleaned_tensor = tf.where(is_nan, zeros, tensor)
+
+        return cleaned_tensor
+
+    def update_rx_positions(self, rx_positions):
+        for i in range(self.num_receivers):
+
+            self.scene.get(f"rx{i}").position = rx_positions[i] + [self.receiver_height]
+
+
+    def compute_channel_gains(self, a, tau, rx_using_ris, ris=False):
+        fft_size = 1
+        subcarrier_spacing = 15e3
+        channels = []
+        
+        # Define OFDM parameters
+        freqs = subcarrier_frequencies(fft_size, subcarrier_spacing)
+
+        # Compute the frequency-domain channel
+        h_freq = cir_to_ofdm_channel(freqs, a, tau, normalize=False)
+
+        for i in range(self.num_receivers):
+            if rx_using_ris[i] == ris:
+                h_freq_i = h_freq[:, i, :, :, :, :, :]
+                channel_i = tf.reduce_mean(tf.abs(h_freq_i) ** 2)
+                channels.append(channel_i)
+
+        return channels    
+
+
+    def compute_data_rates(self, channels):
+        epsilon = 1e-11
+        total_data_rates = []
+        noise_power = 1e-7
+        for i in range(len(channels)):
+            desired = tf.maximum(channels[i], epsilon)
+            sinr = desired / (noise_power + epsilon)
+            total_data_rate = tf.math.log(1 + sinr) / tf.math.log(2.0)
+            total_data_rates.append(total_data_rate.numpy())
+        return total_data_rates
+
+
+    # Utility function to compute received power
+    def calculate_reward(self, rx_using_ris):
+        
+        paths = self.scene.compute_paths(max_depth=2, los=True, reflection=True, ris=True)
+
+        # sn.rt.Scene.render_to_file(self=self.scene, camera="Cam", paths=paths, filename="scene.png")
+
+        # Only paths that are from LOS and reflection
+        a_no_ris, tau_no_ris = paths.cir(los=True, reflection=True, ris=False, num_paths=3)
+
+        # Only paths that are from reflection and RIS
+        a_ris_reflection, tau_ris_reflection = paths.cir(los=False, reflection=True, ris=True, num_paths=3)
+        
+        # Replace nan values with zeros. Only necessary for RIS
+        # Nan values do not appear in other paths. Maybe Sionna bug?
+        a_ris_reflection = self.remove_nans(a_ris_reflection)
+        tau_ris_reflection = self.remove_nans(tau_ris_reflection)
+
+        # Only paths that are from reflection
+        a_only_reflection, tau_only_reflection = paths.cir(los=False, reflection=True, ris=False, num_paths=3)
+
+        # We "subtract" reflection only paths from RIS + reflection paths
+        # to get paths that are either directly from RIS or from RIS
+        # and then reflected.
+        # Necessary because RIS + reflection paths include the reflection
+        # only paths and RIS only paths do not include reflections.
+
+        # Mask to check whether two paths are the same.
+        # We leave tau the same, as if a is zeroed, the delay
+        # is irrelevant.
+        mask = tf.math.reduce_all(tf.abs(a_ris_reflection - a_only_reflection) < 1e-6, axis=-1)
+        mask = tf.expand_dims(mask, axis=-1) 
+        a_ris = tf.where(mask, tf.zeros_like(a_ris_reflection), a_ris_reflection)
+        tau_ris = tau_ris_reflection
+
+        
+        channels = self.compute_channel_gains(a_no_ris, tau_no_ris, rx_using_ris, ris=False)
+        channels_ris = self.compute_channel_gains(a_ris, tau_ris, rx_using_ris, ris=True)
+
+
+        total_data_rates = self.compute_data_rates(channels)
+        total_data_rates_ris = self.compute_data_rates(channels_ris)
+
+        return total_data_rates, total_data_rates_ris
