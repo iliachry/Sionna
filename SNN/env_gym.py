@@ -71,7 +71,7 @@ class RISGymEnvironment(gym.Env):
 
         # Gymnasium environment setup
 
-        self.action_space = spaces.Box(low=0, high=2 * np.pi, shape=(ris_dims[0] * ris_dims[1],), dtype=np.float32)
+        self.action_space = spaces.Box(low=-np.pi, high=np.pi, shape=(ris_dims[0] * ris_dims[1],), dtype=np.float32)
 
         rx_position_low = [-abs_receiver_position_bounds[0], -abs_receiver_position_bounds[1]] * num_receivers
         rx_position_high = [abs_receiver_position_bounds[0], abs_receiver_position_bounds[1]] * num_receivers
