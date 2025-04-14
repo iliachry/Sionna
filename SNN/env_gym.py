@@ -86,6 +86,8 @@ class RISGymEnvironment(gym.Env):
         self.current_step = 0
         self.reward_history = []
         self.running_reward = 0.0
+        self.data_rate_history = []
+        self.running_data_rate = 0.0
 
 
     def reset(self, *, seed=None, options=None):
@@ -127,11 +129,14 @@ class RISGymEnvironment(gym.Env):
         observation = np.concatenate((rx_positions_flat, rx_flags))
 
         self.running_reward += reward
+        self.running_data_rate += sum(reward_real)
         self.current_step += 1
         if self.current_step % 100 == 0:
             self.reward_history.append(self.running_reward)
+            self.data_rate_history.append(self.running_data_rate)
             print(f"Step: {self.current_step}, Reward: {self.running_reward}")
             self.running_reward = 0.0
+            self.running_data_rate = 0.0
         
         return observation, reward, False, False, {}
 
