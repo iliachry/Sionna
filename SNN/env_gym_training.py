@@ -32,8 +32,15 @@ model = PPO(CustomActorCriticPolicy, env, verbose=0,
 
 model.learn(total_timesteps=30000)
 
-reward_history = env.get_attr("reward_history")[0]  
+reward_history = env.get_attr("reward_history")[0]
+data_rate_history = env.get_attr("data_rate_history")[0]  
 
 plt.plot(reward_history)
 plt.title("Reward History")
 plt.savefig("reward_history.png")
+plt.clf()
+
+plt.plot(data_rate_history)
+plt.title("Data Rate History")
+plt.savefig("data_rate_history.png")
+plt.clf()

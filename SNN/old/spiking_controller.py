@@ -7,7 +7,7 @@ import torch
 import matplotlib.pyplot as plt
 import random
 
-from env import RISEnvironment
+from SNN.old.env import RISEnvironment
 
 # Set random seeds for reproducibility
 np.random.seed(42)

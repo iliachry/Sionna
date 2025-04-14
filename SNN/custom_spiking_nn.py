@@ -5,11 +5,9 @@ import snntorch.functional as SF
 import snntorch.spikeplot as splt
 import snntorch.surrogate as surrogate
 
-from typing import Tuple
-
 from stable_baselines3.common.policies import ActorCriticPolicy
 
-from typing import Callable, Dict, List, Optional, Tuple, Type, Union
+from typing import Callable, Tuple
 
 from gymnasium import spaces
 
