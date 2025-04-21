@@ -31,6 +31,9 @@ class CustomExtractorSNN(nn.Module):
         self.fc1_pi = nn.Linear(feature_dim, hidden_dim)
         self.lif1_pi = snn.Leaky(beta=beta_in, threshold=thr_in, learn_beta=True, spike_grad=self.spike_grad)
 
+        self.fc2_pi = nn.Linear(hidden_dim, hidden_dim)
+        self.lif2_pi = snn.Leaky(beta=beta_in, threshold=thr_in, learn_beta=True, spike_grad=self.spike_grad)
+
         beta_out = torch.rand(1)
 
         self.fc_out_pi = nn.Linear(hidden_dim, action_size)
@@ -46,14 +49,17 @@ class CustomExtractorSNN(nn.Module):
 
     def forward_actor(self, x: torch.Tensor) -> torch.Tensor:
         mem1 = self.lif1_pi.init_leaky()
-        mem2 = self.lif_out_pi.init_leaky()
+        mem2 = self.lif2_pi.init_leaky()
+        mem3 = self.lif_out_pi.init_leaky()
 
         for _ in range(self.timesteps):
             cur = self.fc1_pi(x)
             spk1, mem1 = self.lif1_pi(cur, mem1)
-            cur = self.fc_out_pi(spk1)
-            spk2, mem2 = self.lif_out_pi(cur, mem2)
-        scaled_mem = torch.tanh(mem2) * torch.pi
+            cur = self.fc2_pi(spk1)
+            spk2, mem2 = self.lif2_pi(cur, mem1)
+            cur = self.fc_out_pi(spk2)
+            spk3, mem3 = self.lif_out_pi(cur, mem2)
+        scaled_mem = torch.tanh(mem3) * torch.pi
         return scaled_mem
 
     def forward_critic(self, x: torch.Tensor) -> torch.Tensor:

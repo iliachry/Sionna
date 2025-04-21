@@ -24,6 +24,13 @@ class RISGymEnvironment(gym.Env):
         self.abs_receiver_position_bounds = abs_receiver_position_bounds # [70, 45] is maximum, derived from scene
         self.receiver_height = receiver_height
 
+        self.evaluation_positions = []
+        self.evaluation_using_ris = []
+
+        for i in range(100):
+            self.evaluation_positions.append(self.generate_rx_positions())
+            self.evaluation_using_ris.append([1] + [random.choice([0, 1]) for _ in range(self.num_receivers - 1)])
+
         # Sionna set up
 
         self.scene = sn.rt.load_scene(sn.rt.scene.simple_street_canyon)
@@ -49,7 +56,7 @@ class RISGymEnvironment(gym.Env):
         self.rx_positions = self.generate_rx_positions()
         for i in range(self.num_receivers):
             rx = sn.rt.Receiver(name=f"rx{i}", position=self.rx_positions[i])
-            self.scene.add(rx) 
+            self.scene.add(rx)
 
         self.rx_using_ris = [1] + [random.choice([0, 1]) for _ in range(self.num_receivers - 1)]
         random.shuffle(self.rx_using_ris)
@@ -112,11 +119,22 @@ class RISGymEnvironment(gym.Env):
         _, reward_real = self.calculate_reward()
 
 
-        self.scene.get("ris").phase_profile.values = tf.zeros([1, self.ris_num_rows, self.ris_num_cols])
-        _, reward_baseline = self.calculate_reward()
+        # self.scene.get("ris").phase_profile.values = tf.zeros([1, self.ris_num_rows, self.ris_num_cols])
+        # _, reward_baseline = self.calculate_reward()
 
-        reward = (sum(reward_real) - sum(reward_baseline)) * 1000
+        # reward = (sum(reward_real) - sum(reward_baseline)) * 1000
 
+        reward = sum(reward_real) * 1000
+
+        self.running_reward += reward
+        self.current_step += 1
+
+        # Logging and evaluation    
+        if self.current_step % 200 == 0:
+            self.reward_history.append(self.running_reward)
+            self.running_reward = 0.0
+                    
+        # Prepare next observation
         self.rx_positions = self.generate_rx_positions()
         self.update_rx_positions()
 
@@ -127,18 +145,22 @@ class RISGymEnvironment(gym.Env):
         rx_flags = np.array(self.rx_using_ris, dtype=np.float32)
 
         observation = np.concatenate((rx_positions_flat, rx_flags))
-
-        self.running_reward += reward
-        self.running_data_rate += sum(reward_real)
-        self.current_step += 1
-        if self.current_step % 100 == 0:
-            self.reward_history.append(self.running_reward)
-            self.data_rate_history.append(self.running_data_rate)
-            print(f"Step: {self.current_step}, Reward: {self.running_reward}")
-            self.running_reward = 0.0
-            self.running_data_rate = 0.0
         
         return observation, reward, False, False, {}
+    
+    def evaluate(self, model):
+
+        for i in range(len(self.evaluation_positions)):
+            self.rx_positions = self.evaluation_positions[i]
+            self.update_rx_positions()
+            self.rx_using_ris = self.evaluation_using_ris[i]
+            action, _ = model.predict(np.concatenate((np.array(self.rx_positions).flatten(), np.array(self.rx_using_ris))), deterministic=True)
+            self.scene.get("ris").phase_profile.values = tf.reshape(tf.convert_to_tensor(action), [1, self.ris_num_rows, self.ris_num_cols])
+            _, data_rate = self.calculate_reward()
+            self.running_data_rate += sum(data_rate)
+        self.data_rate_history.append(self.running_data_rate/len(self.evaluation_positions))
+        print(f"Average data rate: {self.running_data_rate/len(self.evaluation_positions)}")
+        self.running_data_rate = 0.0
 
 
     def position_is_blocked(self, x, y):
