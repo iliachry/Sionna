@@ -40,8 +40,8 @@ class RISGymEnvironment(gym.Env):
                           horizontal_spacing=0.5,
                           pattern="tr38901",
                           polarization="VH")
-        self.scene.rx_array = sn.rt.PlanarArray(num_rows=1,
-                          num_cols=1,
+        self.scene.rx_array = sn.rt.PlanarArray(num_rows=8,
+                          num_cols=8,
                           vertical_spacing=0.5,
                           horizontal_spacing=0.5,
                           pattern="dipole",
@@ -115,23 +115,40 @@ class RISGymEnvironment(gym.Env):
         return obs, {}
     
     def step(self, action):
+
         self.scene.get("ris").phase_profile.values = tf.reshape(tf.convert_to_tensor(action), [1, self.ris_num_rows, self.ris_num_cols])
         _, reward_real = self.calculate_reward()
 
 
-        # self.scene.get("ris").phase_profile.values = tf.zeros([1, self.ris_num_rows, self.ris_num_cols])
-        # _, reward_baseline = self.calculate_reward()
+       # source = self.scene.get("tx").position
+       # target = self.scene.get("rx0").position
 
-        # reward = (sum(reward_real) - sum(reward_baseline)) * 1000
 
-        reward = sum(reward_real) * 1000
+       # self.scene.get("ris").phase_gradient_reflector(source, target)
+       # _, reward_phase_grad = self.calculate_reward()
+
+        #self.scene.get("ris").focusing_lens(source, target)
+       # _, reward_lens = self.calculate_reward()
+
+        #print(reward_real)
+        #print(reward_phase_grad)
+        #print(reward_lens)
+
+        
+        self.scene.get("ris").phase_profile.values = tf.zeros([1, self.ris_num_rows, self.ris_num_cols])
+        _, reward_baseline = self.calculate_reward()
+
+
+        reward = (sum(reward_real) - sum(reward_baseline)) * 1000
+
+        # reward = sum(reward_real) * 1000
 
         self.running_reward += reward
         self.current_step += 1
 
         # Logging and evaluation    
         if self.current_step % 200 == 0:
-            self.reward_history.append(self.running_reward)
+            self.reward_history.append(self.running_reward / 200)
             self.running_reward = 0.0
                     
         # Prepare next observation
@@ -159,7 +176,7 @@ class RISGymEnvironment(gym.Env):
             _, data_rate = self.calculate_reward()
             self.running_data_rate += sum(data_rate)
         self.data_rate_history.append(self.running_data_rate/len(self.evaluation_positions))
-        print(f"Average data rate: {self.running_data_rate/len(self.evaluation_positions)}")
+        print(f"({len(self.data_rate_history)}) Average data rate: {self.running_data_rate/len(self.evaluation_positions)}")
         self.running_data_rate = 0.0
 
 
@@ -223,6 +240,7 @@ class RISGymEnvironment(gym.Env):
 
         return cleaned_tensor
 
+
     def update_rx_positions(self):
         for i in range(self.num_receivers):
             self.scene.get(f"rx{i}").position = self.rx_positions[i] + [self.receiver_height]
@@ -270,6 +288,7 @@ class RISGymEnvironment(gym.Env):
         # Only paths that are from LOS and reflection
         a_no_ris, tau_no_ris = paths.cir(los=True, reflection=True, ris=False, num_paths=3)
 
+
         # Only paths that are from reflection and RIS
         a_ris_reflection, tau_ris_reflection = paths.cir(los=False, reflection=True, ris=True, num_paths=3)
         
@@ -280,6 +299,7 @@ class RISGymEnvironment(gym.Env):
 
         # Only paths that are from reflection
         a_only_reflection, tau_only_reflection = paths.cir(los=False, reflection=True, ris=False, num_paths=3)
+
 
         # We "subtract" reflection only paths from RIS + reflection paths
         # to get paths that are either directly from RIS or from RIS
