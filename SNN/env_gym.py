@@ -80,13 +80,11 @@ class RISGymEnvironment(gym.Env):
 
         self.action_space = spaces.Box(low=-np.pi, high=np.pi, shape=(ris_dims[0] * ris_dims[1],), dtype=np.float32)
 
-        rx_position_low = [-abs_receiver_position_bounds[0], -abs_receiver_position_bounds[1]] * num_receivers
-        rx_position_high = [abs_receiver_position_bounds[0], abs_receiver_position_bounds[1]] * num_receivers
-        ris_flags_low = [0] * num_receivers
-        ris_flags_high = [1] * num_receivers
+        rx_position_low = [-abs_receiver_position_bounds[0], -abs_receiver_position_bounds[1]]
+        rx_position_high = [abs_receiver_position_bounds[0], abs_receiver_position_bounds[1]]
 
-        low = np.array(rx_position_low + ris_flags_low, dtype=np.float32)
-        high = np.array(rx_position_high + ris_flags_high, dtype=np.float32)
+        low = np.array(rx_position_low, dtype=np.float32)
+        high = np.array(rx_position_high, dtype=np.float32)
 
         self.observation_space = spaces.Box(low=low, high=high, dtype=np.float32)
 
@@ -108,9 +106,8 @@ class RISGymEnvironment(gym.Env):
         random.shuffle(self.rx_using_ris)
 
         rx_positions_flat = np.array(self.rx_positions, dtype=np.float32).flatten()
-        rx_flags = np.array(self.rx_using_ris, dtype=np.float32)
 
-        obs = np.concatenate((rx_positions_flat, rx_flags))
+        obs = rx_positions_flat
 
         return obs, {}
     
@@ -159,22 +156,25 @@ class RISGymEnvironment(gym.Env):
         random.shuffle(self.rx_using_ris)
 
         rx_positions_flat = np.array(self.rx_positions, dtype=np.float32).flatten()
-        rx_flags = np.array(self.rx_using_ris, dtype=np.float32)
 
-        observation = np.concatenate((rx_positions_flat, rx_flags))
+        observation = rx_positions_flat
         
         return observation, reward, False, False, {}
     
     def evaluate(self, model):
 
         for i in range(len(self.evaluation_positions)):
+
             self.rx_positions = self.evaluation_positions[i]
             self.update_rx_positions()
             self.rx_using_ris = self.evaluation_using_ris[i]
-            action, _ = model.predict(np.concatenate((np.array(self.rx_positions).flatten(), np.array(self.rx_using_ris))), deterministic=True)
+
+            action, _ = model.predict((np.array(self.rx_positions).flatten()), deterministic=True)
             self.scene.get("ris").phase_profile.values = tf.reshape(tf.convert_to_tensor(action), [1, self.ris_num_rows, self.ris_num_cols])
+            
             _, data_rate = self.calculate_reward()
             self.running_data_rate += sum(data_rate)
+
         self.data_rate_history.append(self.running_data_rate/len(self.evaluation_positions))
         print(f"({len(self.data_rate_history)}) Average data rate: {self.running_data_rate/len(self.evaluation_positions)}")
         self.running_data_rate = 0.0

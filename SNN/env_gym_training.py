@@ -13,14 +13,15 @@ set_random_seed(42)
 
 # Define environment as a dummy vectorized environment
 # with a single instance of the RISGymEnvironment
-env = DummyVecEnv([lambda: RISGymEnvironment(num_receivers=2, ris_dims=[4, 4], abs_receiver_position_bounds=[4, 4])])
+env = DummyVecEnv([lambda: RISGymEnvironment(num_receivers=1, ris_dims=[4, 4], abs_receiver_position_bounds=[5, 5])])
 
 env = VecNormalize(env, norm_obs=True, norm_reward=True)
 
 # Instantiate model as PPO with MlpPolicy
 # Gamma, gae_lambda set to 0 so the model only considers 
 # the immediate reward for the current step
-"""
+
+
 model = PPO(CustomActorCriticPolicy, env, verbose=0,
             learning_rate=1e-3,
             gamma=0.0,
@@ -30,8 +31,8 @@ model = PPO(CustomActorCriticPolicy, env, verbose=0,
             clip_range=0.2,
             ent_coef=0.005,
             n_epochs=3)
-"""
-            
+
+"""          
 model = PPO("MlpPolicy", env, verbose=0,
             learning_rate=1e-3,
             gamma=0.0,
@@ -41,7 +42,7 @@ model = PPO("MlpPolicy", env, verbose=0,
             clip_range=0.2,
             ent_coef=0.01,
             n_epochs=3)
-
+"""
 
 env.envs[0].evaluate(model)
 for i in range(100): 
