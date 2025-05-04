@@ -11,13 +11,27 @@ import numpy as np
 
 set_random_seed(42)
 
+"""
+model.save("phase_model")
+env.save("vecnormalize_cartpole.pkl")
+
+env = DummyVecEnv([lambda: gym.make("CartPole-v1")])
+env = VecNormalize.load("vecnormalize_cartpole.pkl", env)
+
+
+
+"""
+
+training_mode = "phase"  # phase or association
+# model_p = PPO.load("phase_model")
+
 # Define environment as a dummy vectorized environment
 # with a single instance of the RISGymEnvironment
-env = DummyVecEnv([lambda: RISGymEnvironment(num_receivers=1, ris_dims=[4, 4], abs_receiver_position_bounds=[5, 5])])
+env = DummyVecEnv([lambda: RISGymEnvironment(num_receivers=1, mode=training_mode, ris_dims=[4, 4], abs_receiver_position_bounds=[10, 5])])
 
-env = VecNormalize(env, norm_obs=True, norm_reward=True)
+env = VecNormalize(env, norm_obs=False, norm_reward=True)
 
-# Instantiate model as PPO with MlpPolicy
+# Instantiate model as PPO with custom Policy
 # Gamma, gae_lambda set to 0 so the model only considers 
 # the immediate reward for the current step
 
@@ -30,7 +44,8 @@ model = PPO(CustomActorCriticPolicy, env, verbose=0,
             batch_size=64,
             clip_range=0.2,
             ent_coef=0.005,
-            n_epochs=3)
+            n_epochs=3,
+            policy_kwargs=dict(mode=training_mode))
 
 """          
 model = PPO("MlpPolicy", env, verbose=0,
@@ -45,10 +60,11 @@ model = PPO("MlpPolicy", env, verbose=0,
 """
 
 env.envs[0].evaluate(model)
-for i in range(100): 
+for i in range(150): 
     model.learn(total_timesteps=1000)
     env.envs[0].evaluate(model)
 
+model.save("phase_model")
 
 reward_history = np.array(env.get_attr("reward_history")[0])
 data_rate_history = np.array(env.get_attr("data_rate_history")[0])  
@@ -77,3 +93,5 @@ plt.plot(moving_avg_data_rate)
 plt.title("Moving Average of Data Rate History")
 plt.savefig("moving_avg_data_rate_history.png")
 plt.clf()
+
+

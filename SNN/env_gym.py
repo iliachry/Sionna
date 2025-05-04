@@ -17,8 +17,10 @@ set_random_seed(seed = 42)
 
 
 class RISGymEnvironment(gym.Env):
-    def __init__(self, num_receivers, ris_dims = [3, 3], abs_receiver_position_bounds = [10, 10], receiver_height = 5, options_per_element = 4):
+    def __init__(self, num_receivers, mode, ris_dims = [4, 4], abs_receiver_position_bounds = [10, 10], receiver_height = 5, phase_model = None):
         super().__init__()
+
+        self.phase_model = phase_model
 
         self.num_receivers = num_receivers
         self.abs_receiver_position_bounds = abs_receiver_position_bounds # [70, 45] is maximum, derived from scene
@@ -69,8 +71,8 @@ class RISGymEnvironment(gym.Env):
         
         cell_grid = sn.rt.CellGrid(self.ris_num_rows, self.ris_num_cols)
         ris = sn.rt.RIS(name="ris", position=self.ris_position, num_rows=self.ris_num_rows, num_cols=self.ris_num_cols, look_at=self.ris_look_at)
-        ris.phase_profile = sn.rt.DiscretePhaseProfile(cell_grid=cell_grid, num_modes=1, values=tf.zeros
-                                                            ([1, self.ris_num_rows, self.ris_num_cols]))
+        ris.phase_profile = sn.rt.DiscretePhaseProfile(cell_grid=cell_grid, num_modes=num_receivers, values=tf.zeros
+                                                            ([num_receivers, self.ris_num_rows, self.ris_num_cols]))
         
         self.scene.add(ris)
         self.scene.frequency = 2.4e9
@@ -78,15 +80,40 @@ class RISGymEnvironment(gym.Env):
 
         # Gymnasium environment setup
 
-        self.action_space = spaces.Box(low=-np.pi, high=np.pi, shape=(ris_dims[0] * ris_dims[1],), dtype=np.float32)
+        self.step_modes = {
+            'phase': self.step_phase,
+            'association': self.step_association
+        }
 
-        rx_position_low = [-abs_receiver_position_bounds[0], -abs_receiver_position_bounds[1]]
-        rx_position_high = [abs_receiver_position_bounds[0], abs_receiver_position_bounds[1]]
+        self.reset_modes = {
+            'phase': self.reset_phase,
+            'association': self.reset_association
+        }
 
-        low = np.array(rx_position_low, dtype=np.float32)
-        high = np.array(rx_position_high, dtype=np.float32)
+        self.step = self.step_modes[mode]
+        self.reset = self.reset_modes[mode]
+        
+        if mode == "phase":
+            self.action_space = spaces.Box(low=-np.pi, high=np.pi, shape=(ris_dims[0] * ris_dims[1],), dtype=np.float32)
 
-        self.observation_space = spaces.Box(low=low, high=high, dtype=np.float32)
+            rx_position_low = [-abs_receiver_position_bounds[0], -abs_receiver_position_bounds[1]]
+            rx_position_high = [abs_receiver_position_bounds[0], abs_receiver_position_bounds[1]]
+
+            low = np.array(rx_position_low, dtype=np.float32)
+            high = np.array(rx_position_high, dtype=np.float32)
+
+            self.observation_space = spaces.Box(low=low, high=high, dtype=np.float32)
+
+        elif mode == "association":
+            self.action_space = spaces.MultiDiscrete([2] * self.num_receivers)
+
+            rx_position_low = [-abs_receiver_position_bounds[0], -abs_receiver_position_bounds[1]] * self.num_receivers
+            rx_position_high = [abs_receiver_position_bounds[0], abs_receiver_position_bounds[1]] * self.num_receivers
+
+            low = np.array(rx_position_low, dtype=np.float32)
+            high = np.array(rx_position_high, dtype=np.float32)
+
+            self.observation_space = spaces.Box(low=low, high=high, dtype=np.float32)
 
         self.current_step = 0
         self.reward_history = []
@@ -95,50 +122,82 @@ class RISGymEnvironment(gym.Env):
         self.running_data_rate = 0.0
 
 
-    def reset(self, *, seed=None, options=None):
+    def reset_association(self, *, seed=None, options=None):
+        super().reset(seed=seed)
+
+        self.rx_positions = self.generate_rx_positions()
+        self.update_rx_positions()
+
+        observation = self.normalize_obs(self.rx_positions)
+
+        return observation, {}
+    
+
+    def step_association(self, action):
+        self.rx_using_ris = action
+        phase_list = []
+        active_modes = sum(self.rx_using_ris)
+        mode_power = []
+        for i in range(self.num_receivers):
+            if self.rx_using_ris[i] == 1:
+                mode_power.append(1 / active_modes)
+                phase_list.append(self.phase_model.predict(self.rx_positions[i]))
+            else:
+                mode_power.append(0)
+                phase_list.append(([0] * (self.ris_num_rows * self.ris_num_cols), None))
+
+        phases_tensor = tf.convert_to_tensor([item[0] for item in phase_list])
+
+        configurations  = tf.reshape(phases_tensor, [len(phase_list), self.ris_num_rows, self.ris_num_cols])
+
+        self.scene.get("ris").phase_profile.values = configurations
+        self.scene.get("ris").amplitude_profile.mode_power = tf.convert_to_tensor(mode_power, dtype=tf.float32)
+
+        
+
+        data_rate_bs, data_rate_ris = self.calculate_reward()
+
+        reward = sum(data_rate_ris) + sum(data_rate_bs)
+        self.running_reward += reward
+        self.current_step += 1
+
+        if self.current_step % 200 == 0:
+            print(f"({self.current_step}) Average reward: {self.running_reward / 200}")
+            self.reward_history.append(self.running_reward / 200)
+            self.running_reward = 0.0
+
+        self.rx_positions = self.generate_rx_positions()
+        self.update_rx_positions()
+
+        observation = self.normalize_obs(self.rx_positions)
+        
+        return observation, reward, False, False, {}
+
+
+    def reset_phase(self, *, seed=None, options=None):
         super().reset(seed=seed)
 
         self.rx_positions = self.generate_rx_positions()
         self.update_rx_positions()
 
         # Define which RXs use the RIS, e.g. randomly or all True
-        self.rx_using_ris = [1] + [random.choice([0, 1]) for _ in range(self.num_receivers - 1)]
-        random.shuffle(self.rx_using_ris)
+        self.rx_using_ris = [1] 
 
-        rx_positions_flat = np.array(self.rx_positions, dtype=np.float32).flatten()
+        observation = self.normalize_obs(self.rx_positions)
 
-        obs = rx_positions_flat
+        return observation, {}
+            
 
-        return obs, {}
-    
-    def step(self, action):
+    def step_phase(self, action):
 
         self.scene.get("ris").phase_profile.values = tf.reshape(tf.convert_to_tensor(action), [1, self.ris_num_rows, self.ris_num_cols])
         _, reward_real = self.calculate_reward()
-
-
-       # source = self.scene.get("tx").position
-       # target = self.scene.get("rx0").position
-
-
-       # self.scene.get("ris").phase_gradient_reflector(source, target)
-       # _, reward_phase_grad = self.calculate_reward()
-
-        #self.scene.get("ris").focusing_lens(source, target)
-       # _, reward_lens = self.calculate_reward()
-
-        #print(reward_real)
-        #print(reward_phase_grad)
-        #print(reward_lens)
-
         
         self.scene.get("ris").phase_profile.values = tf.zeros([1, self.ris_num_rows, self.ris_num_cols])
         _, reward_baseline = self.calculate_reward()
 
 
         reward = (sum(reward_real) - sum(reward_baseline)) * 1000
-
-        # reward = sum(reward_real) * 1000
 
         self.running_reward += reward
         self.current_step += 1
@@ -152,15 +211,13 @@ class RISGymEnvironment(gym.Env):
         self.rx_positions = self.generate_rx_positions()
         self.update_rx_positions()
 
-        self.rx_using_ris = [1] + [random.choice([0, 1]) for _ in range(self.num_receivers - 1)]
-        random.shuffle(self.rx_using_ris)
+        self.rx_using_ris = [1]
 
-        rx_positions_flat = np.array(self.rx_positions, dtype=np.float32).flatten()
-
-        observation = rx_positions_flat
+        observation = self.normalize_obs(self.rx_positions)
         
         return observation, reward, False, False, {}
     
+
     def evaluate(self, model):
 
         for i in range(len(self.evaluation_positions)):
@@ -169,7 +226,7 @@ class RISGymEnvironment(gym.Env):
             self.update_rx_positions()
             self.rx_using_ris = self.evaluation_using_ris[i]
 
-            action, _ = model.predict((np.array(self.rx_positions).flatten()), deterministic=True)
+            action, _ = model.predict(self.normalize_obs((np.array(self.rx_positions))), deterministic=True)
             self.scene.get("ris").phase_profile.values = tf.reshape(tf.convert_to_tensor(action), [1, self.ris_num_rows, self.ris_num_cols])
             
             _, data_rate = self.calculate_reward()
@@ -178,6 +235,15 @@ class RISGymEnvironment(gym.Env):
         self.data_rate_history.append(self.running_data_rate/len(self.evaluation_positions))
         print(f"({len(self.data_rate_history)}) Average data rate: {self.running_data_rate/len(self.evaluation_positions)}")
         self.running_data_rate = 0.0
+
+
+    def normalize_obs(self, observations):
+        obs_min = self.observation_space.low
+        obs_max = self.observation_space.high
+        observations = np.asarray(observations, dtype=np.float32).flatten()
+        
+        normalized_obs = (observations - obs_min) / (obs_max - obs_min)
+        return normalized_obs
 
 
     def position_is_blocked(self, x, y):

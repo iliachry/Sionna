@@ -77,21 +77,29 @@ class CustomActorCriticPolicy(ActorCriticPolicy):
         action_space: spaces.Space,
         lr_schedule: Callable[[float], float],
         *args,
+        mode: str = "phase",
         **kwargs,
     ):
+        self.mode = mode
         kwargs["ortho_init"] = False
         super().__init__(observation_space, action_space, lr_schedule, *args, **kwargs)
+        
 
     def _build_mlp_extractor(self) -> None:
-        self.mlp_extractor = CustomExtractorSNN(self.features_dim, self.action_space.shape[0])
+        if self.mode == "phase":
+            self.mlp_extractor = CustomExtractorSNN(self.features_dim, self.action_space.shape[0])
+        elif self.mode == "association":
+            self.mlp_extractor = CustomExtractorSNN(self.features_dim, self.action_space.shape[0] * 2)
 
     def _build(self, lr_schedule):
 
         self._build_mlp_extractor()
 
         self.action_net = nn.Identity()
-        self.log_std = nn.Parameter(torch.zeros(self.action_space.shape[0]), requires_grad=True)
+        if self.mode == "phase":
+            self.log_std = nn.Parameter(torch.zeros(self.action_space.shape[0]), requires_grad=True)
         
+
         self.value_net = nn.Linear(self.mlp_extractor.latent_dim_vf, 1)
 
         self.optimizer = self.optimizer_class(self.parameters(), lr=lr_schedule(1), **self.optimizer_kwargs)
