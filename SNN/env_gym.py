@@ -8,6 +8,10 @@ import gymnasium as gym
 from gymnasium import spaces
 from stable_baselines3.common.utils import set_random_seed
 
+from api_env import InnosimAPI
+import requests
+
+ip = "localhost"
 set_random_seed(seed = 42)
 
 # The environment class for the RIS simulation
@@ -17,9 +21,10 @@ set_random_seed(seed = 42)
 
 
 class RISGymEnvironment(gym.Env):
-    def __init__(self, num_receivers, mode, ris_dims = [4, 4], abs_receiver_position_bounds = [10, 10], receiver_height = 5, phase_model = None):
+    def __init__(self, num_receivers, mode, ris_dims = [4, 4], abs_receiver_position_bounds = [200, 200], receiver_height = 5, phase_model = None):
         super().__init__()
 
+        self.innosim = InnosimAPI(ip)
         self.phase_model = phase_model
 
         self.num_receivers = num_receivers
@@ -125,13 +130,42 @@ class RISGymEnvironment(gym.Env):
     def reset_association(self, *, seed=None, options=None):
         super().reset(seed=seed)
 
+        self.innosim.reset()
+        observation = self.innosim.get_observation()
+        observation = [coord for pos in observation for coord in pos[:2]]
+        return observation, {}
+
+    def step_association(self, action):
+        truncated = False
+        self.innosim.update_association_matrix(action)
+        reward = self.innosim.compute_reward()
+
+        self.running_reward += reward
+        self.current_step += 1
+
+        if self.current_step % 95 == 0:
+            print(f"({self.current_step}) Average reward: {self.running_reward / 95}")
+            self.reward_history.append(self.running_reward / 95)
+            self.running_reward = 0.0
+            truncated = True
+
+        observation = self.innosim.get_observation()
+        observation = [coord for pos in observation for coord in pos[:2]]
+
+        return observation, reward, False, truncated, {}
+
+
+    """
+
+    def reset_association(self, *, seed=None, options=None):
+        super().reset(seed=seed)
+
         self.rx_positions = self.generate_rx_positions()
         self.update_rx_positions()
 
         observation = self.normalize_obs(self.rx_positions)
 
         return observation, {}
-    
 
     def step_association(self, action):
         self.rx_using_ris = action
@@ -161,9 +195,9 @@ class RISGymEnvironment(gym.Env):
         self.running_reward += reward
         self.current_step += 1
 
-        if self.current_step % 200 == 0:
-            print(f"({self.current_step}) Average reward: {self.running_reward / 200}")
-            self.reward_history.append(self.running_reward / 200)
+        if self.current_step % 100 == 0:
+            print(f"({self.current_step}) Average reward: {self.running_reward / 100}")
+            self.reward_history.append(self.running_reward / 100)
             self.running_reward = 0.0
 
         self.rx_positions = self.generate_rx_positions()
@@ -172,7 +206,7 @@ class RISGymEnvironment(gym.Env):
         observation = self.normalize_obs(self.rx_positions)
         
         return observation, reward, False, False, {}
-
+    """
 
     def reset_phase(self, *, seed=None, options=None):
         super().reset(seed=seed)
@@ -180,7 +214,6 @@ class RISGymEnvironment(gym.Env):
         self.rx_positions = self.generate_rx_positions()
         self.update_rx_positions()
 
-        # Define which RXs use the RIS, e.g. randomly or all True
         self.rx_using_ris = [1] 
 
         observation = self.normalize_obs(self.rx_positions)
@@ -202,12 +235,10 @@ class RISGymEnvironment(gym.Env):
         self.running_reward += reward
         self.current_step += 1
 
-        # Logging and evaluation    
         if self.current_step % 200 == 0:
             self.reward_history.append(self.running_reward / 200)
             self.running_reward = 0.0
                     
-        # Prepare next observation
         self.rx_positions = self.generate_rx_positions()
         self.update_rx_positions()
 
@@ -287,7 +318,6 @@ class RISGymEnvironment(gym.Env):
 
     def remove_nans(self, tensor):
         if tensor.dtype in (tf.complex64, tf.complex128):
-            # Complex tensor handling
             real_part = tf.math.real(tensor)
             imag_part = tf.math.imag(tensor)
             is_nan = tf.math.logical_or(
@@ -295,13 +325,10 @@ class RISGymEnvironment(gym.Env):
                 tf.math.is_nan(imag_part)
             )
         else:
-            # Float tensor handling
             is_nan = tf.math.is_nan(tensor)
-        
-        # Create zeros with the same type as input tensor
+
         zeros = tf.zeros_like(tensor)
         
-        # Replace NaN values with zeros
         cleaned_tensor = tf.where(is_nan, zeros, tensor)
 
         return cleaned_tensor
@@ -344,12 +371,9 @@ class RISGymEnvironment(gym.Env):
         return total_data_rates
 
 
-    # Utility function to compute received power
     def calculate_reward(self):
         
         paths = self.scene.compute_paths(max_depth=2, los=True, reflection=True, ris=True)
-
-        # sn.rt.Scene.render_to_file(self=self.scene, camera="Cam", paths=paths, filename="scene.png")
 
         # Only paths that are from LOS and reflection
         a_no_ris, tau_no_ris = paths.cir(los=True, reflection=True, ris=False, num_paths=3)

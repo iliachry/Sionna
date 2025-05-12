@@ -11,60 +11,62 @@ import numpy as np
 
 set_random_seed(42)
 
-"""
-model.save("phase_model")
-env.save("vecnormalize_cartpole.pkl")
 
-env = DummyVecEnv([lambda: gym.make("CartPole-v1")])
-env = VecNormalize.load("vecnormalize_cartpole.pkl", env)
-
+training_mode = "association"               # phase or association training mode
+num_receivers = 10                          # Only used for association mode, otherwise ignored
+ris_dims = [4, 4]                           # Dimensions of the RIS
+abs_receiver_position_bounds = [200, 200]   # Bounds for the absolute receiver positions
 
 
-"""
-
-training_mode = "phase"  # phase or association
-# model_p = PPO.load("phase_model")
-
-# Define environment as a dummy vectorized environment
-# with a single instance of the RISGymEnvironment
-env = DummyVecEnv([lambda: RISGymEnvironment(num_receivers=1, mode=training_mode, ris_dims=[4, 4], abs_receiver_position_bounds=[10, 5])])
-
-env = VecNormalize(env, norm_obs=False, norm_reward=True)
-
-# Instantiate model as PPO with custom Policy
-# Gamma, gae_lambda set to 0 so the model only considers 
-# the immediate reward for the current step
+# To train model for association, phase model must already exist
+# Association model must have the same dimensions and position bounds
+# as the existing phase model
 
 
-model = PPO(CustomActorCriticPolicy, env, verbose=0,
-            learning_rate=1e-3,
-            gamma=0.0,
-            gae_lambda=0.0,
-            n_steps=256,
-            batch_size=64,
-            clip_range=0.2,
-            ent_coef=0.005,
-            n_epochs=3,
-            policy_kwargs=dict(mode=training_mode))
+if training_mode == "phase":
+    env = DummyVecEnv([lambda: RISGymEnvironment(num_receivers=1, mode=training_mode, ris_dims=ris_dims, abs_receiver_position_bounds=abs_receiver_position_bounds)])
 
-"""          
-model = PPO("MlpPolicy", env, verbose=0,
-            learning_rate=1e-3,
-            gamma=0.0,
-            gae_lambda=0.0,
-            n_steps=256,
-            batch_size=64,
-            clip_range=0.2,
-            ent_coef=0.01,
-            n_epochs=3)
-"""
+    env = VecNormalize(env, norm_obs=False, norm_reward=True)
 
-env.envs[0].evaluate(model)
-for i in range(150): 
-    model.learn(total_timesteps=1000)
+    model = PPO(CustomActorCriticPolicy, env, verbose=0,
+                learning_rate=1e-3,
+                gamma=0.0,
+                gae_lambda=0.0,
+                n_steps=256,
+                batch_size=64,
+                clip_range=0.2,
+                ent_coef=0.005,
+                n_epochs=3,
+                policy_kwargs=dict(mode=training_mode))
+
     env.envs[0].evaluate(model)
+    for i in range(80): 
+        model.learn(total_timesteps=1000)
+        env.envs[0].evaluate(model)
 
-model.save("phase_model")
+elif training_mode == "association":
+    model_p = PPO.load("phase_model")
+
+    env = DummyVecEnv([lambda: RISGymEnvironment(num_receivers=num_receivers, mode=training_mode, ris_dims=ris_dims, abs_receiver_position_bounds=abs_receiver_position_bounds, phase_model=model_p)])
+
+    env = VecNormalize(env, norm_obs=False, norm_reward=True)
+
+    model = PPO(CustomActorCriticPolicy, env, verbose=0,
+                learning_rate=1e-3,
+                gamma=0.0,
+                gae_lambda=0.0,
+                n_steps=256,
+                batch_size=64,
+                clip_range=0.2,
+                ent_coef=0.005,
+                n_epochs=3,
+                policy_kwargs=dict(mode=training_mode))
+
+
+
+    model.learn(total_timesteps=10_000)
+    model.save("as_model")
+
 
 reward_history = np.array(env.get_attr("reward_history")[0])
 data_rate_history = np.array(env.get_attr("data_rate_history")[0])  
@@ -78,6 +80,9 @@ plt.plot(data_rate_history)
 plt.title("Data Rate History")
 plt.savefig("data_rate_history.png")
 plt.clf()
+
+
+# Smoother, moving average based plots
 
 window_size = 10
 moving_avg_reward = np.convolve(reward_history, np.ones(window_size)/window_size, mode='valid')

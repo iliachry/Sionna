@@ -20,10 +20,7 @@ class CustomExtractorSNN(nn.Module):
         self.latent_dim_pi = action_size
         self.latent_dim_vf = last_layer_dim_vf
 
-        # Define spike neuron layer
         self.spike_grad = surrogate.fast_sigmoid(slope=25)
-
-        # Policy SNN
 
         beta_in = torch.rand(hidden_dim)
         thr_in = torch.rand(hidden_dim)
@@ -68,7 +65,6 @@ class CustomExtractorSNN(nn.Module):
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         return self.forward_actor(x), self.forward_critic(x)
     
-
 
 class CustomActorCriticPolicy(ActorCriticPolicy):
     def __init__(
