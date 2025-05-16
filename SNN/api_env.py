@@ -5,7 +5,9 @@ class InnosimAPI:
     def __init__(self, ip):
         self.ip = ip
 
+
     def update_association_matrix(self, mapping_array):
+            # ris_targets currently dummy values
             tx_map = {"ris_targets": [1, 2]} | self.receiver_list_to_dict(mapping_array)
             try:
                 response = requests.post(f"http://{self.ip}:5000/update-association-matrix", json=tx_map)
@@ -13,7 +15,8 @@ class InnosimAPI:
             except requests.RequestException as e:
                 print(f"Error updating association matrix: {e}")
 
-    def compute_reward(self):
+
+    def compute_reward_association(self):
         try:
             association_resp = requests.get(f"http://{self.ip}:5000/get-association-matrix")
             association_resp.raise_for_status()
@@ -53,6 +56,7 @@ class InnosimAPI:
             print(f"JSON decoding error in compute_reward: {e}")
             return 0.0
 
+
     def get_observation(self):
         try:
             response = requests.get(f"http://{self.ip}:5000/get-config")
@@ -65,6 +69,7 @@ class InnosimAPI:
         except (ValueError, KeyError) as e:
             print(f"Error processing observation data: {e}")
             return []
+
 
     def reset(self):
         try:
@@ -81,32 +86,5 @@ class InnosimAPI:
             rx_key = idx + 1
             tx_map[tx_key].append(rx_key)
         return dict(tx_map)
-    
-
-"""
-innosim = InnosimAPI(ip="3.70.236.89")
-print(innosim.get_observation())
-
-wait = input("Press Enter to continue...")
-print(innosim.compute_reward())
-
-wait = input("Press Enter to continue...")
 
 
-response = requests.get(f"http://{ip}:5000/get-config")
-print(response.json())
-
-association = requests.get(f"http://{ip}:5000/get-association-matrix").json()
-print(association)
-
-
-transmitters = {key: value for key, value in association.items() if key.startswith('tx')}
-print(transmitters)
-
-
-sim_results = requests.post(f"http://{ip}:5000/run-sim").json()
-results_transmitters = {key: value for key, value in sim_results['output_received'].items() if key.startswith('tx')}
-
-
-print(results_transmitters)
-"""

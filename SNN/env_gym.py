@@ -9,9 +9,9 @@ from gymnasium import spaces
 from stable_baselines3.common.utils import set_random_seed
 
 from api_env import InnosimAPI
-import requests
 
-ip = "18.185.87.204"
+
+ip = "18.185.87.204" # or "localhost"
 set_random_seed(seed = 42)
 
 # The environment class for the RIS simulation
@@ -28,7 +28,7 @@ class RISGymEnvironment(gym.Env):
         self.phase_model = phase_model
 
         self.num_receivers = num_receivers
-        self.abs_receiver_position_bounds = abs_receiver_position_bounds # [70, 45] is maximum, derived from scene
+        self.abs_receiver_position_bounds = abs_receiver_position_bounds
         self.receiver_height = receiver_height
 
         self.evaluation_positions = []
@@ -132,13 +132,14 @@ class RISGymEnvironment(gym.Env):
 
         self.innosim.reset()
         observation = self.innosim.get_observation()
-        observation = [coord for pos in observation for coord in pos[:2]]
+        observation = self.normalize_obs([pos[:2] for pos in observation])
         return observation, {}
+
 
     def step_association(self, action):
         truncated = False
         self.innosim.update_association_matrix(action)
-        reward = self.innosim.compute_reward()
+        reward = self.innosim.compute_reward_association()
 
         self.running_reward += reward
         self.current_step += 1
@@ -150,12 +151,13 @@ class RISGymEnvironment(gym.Env):
             truncated = True
 
         observation = self.innosim.get_observation()
-        observation = [coord for pos in observation for coord in pos[:2]]
+        observation = self.normalize_obs([pos[:2] for pos in observation])
 
         return observation, reward, False, truncated, {}
 
 
     """
+    For straight in Sionna, without API
 
     def reset_association(self, *, seed=None, options=None):
         super().reset(seed=seed)
@@ -208,19 +210,58 @@ class RISGymEnvironment(gym.Env):
         return observation, reward, False, False, {}
     """
 
+    # CHANGES REQUIRED HERE
+
     def reset_phase(self, *, seed=None, options=None):
         super().reset(seed=seed)
 
-        self.rx_positions = self.generate_rx_positions()
-        self.update_rx_positions()
+        self.innosim.reset()
+        observation = None
+        """
+        observation = self.normalizeobs( [[X, Y]] OF RECEIVER TARGETED BY RIS, WHICH RECEIVER IS SELECTED IS ARBITRARY)
 
-        self.rx_using_ris = [1] 
-
-        observation = self.normalize_obs(self.rx_positions)
-
+        """ 
         return observation, {}
+    
+
+    def step_phase(self, action):
+        """
+        API METHOD THAT RECEIVES PHASE SHIFTS AS TENSOR WITH DIMENSIONS [1, RIS_ROWS, RIS_COLUMNS] TO TAKE - -
+        - > tf.reshape(tf.convert_to_tensor(action), [1, self.ris_num_rows, self.ris_num_cols])
+        CAN ALSO BE CHANGED TO RECEIVE DIFFERENT DIMS
+
+        RUN SIM AND GET RESULTS
+
+        reward = DATA RATE OF THE RECEIVER TARGETED BY RIS
+
+        
+        # PERFORMANCE LOGGING
+        self.running_reward += reward
+        self.current_step += 1
+
+        if self.current_step % 200 == 0:
+            self.reward_history.append(self.running_reward / 200)
+            self.running_reward = 0.0
+
+            
+        # IF THE SIMULATION IS GOING OUT OF BOUNDS, RESET
+        if self.current_step % 95 == 0:
+            truncated = True
             
 
+        # UPDATE RX POSITIONS
+        observation = self.normalizeobs( [[X, Y]] OF RECEIVER TARGETED BY RIS, WHICH RECEIVER IS SELECTED IS ARBITRARY)
+        
+
+        return observation, reward, False, truncated, {}
+        """    
+    
+    # CHANGES END
+
+
+
+
+    """
     def step_phase(self, action):
 
         self.scene.get("ris").phase_profile.values = tf.reshape(tf.convert_to_tensor(action), [1, self.ris_num_rows, self.ris_num_cols])
@@ -248,7 +289,7 @@ class RISGymEnvironment(gym.Env):
         
         return observation, reward, False, False, {}
     
-
+    
     def evaluate(self, model):
 
         for i in range(len(self.evaluation_positions)):
@@ -266,7 +307,7 @@ class RISGymEnvironment(gym.Env):
         self.data_rate_history.append(self.running_data_rate/len(self.evaluation_positions))
         print(f"({len(self.data_rate_history)}) Average data rate: {self.running_data_rate/len(self.evaluation_positions)}")
         self.running_data_rate = 0.0
-
+    """
 
     def normalize_obs(self, observations):
         obs_min = self.observation_space.low
