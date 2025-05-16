@@ -1,6 +1,7 @@
 from stable_baselines3 import PPO
 from stable_baselines3.common.utils import set_random_seed
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
+from stable_baselines3.common.callbacks import CheckpointCallback
 
 from custom_spiking_nn import CustomActorCriticPolicy
 
@@ -21,6 +22,12 @@ abs_receiver_position_bounds = [200, 200]   # Bounds for the absolute receiver p
 # To train model for association, phase model must already exist
 # Association model must have the same dimensions and position bounds
 # as the existing phase model
+
+checkpoint_callback = CheckpointCallback(
+    save_freq=100,              # Save every 100 steps
+    save_path='./checkpoints/',  # Directory to save checkpoints
+    name_prefix='ppo_model2'      # File name prefix
+)
 
 
 if training_mode == "phase":
@@ -64,7 +71,7 @@ elif training_mode == "association":
 
 
 
-    model.learn(total_timesteps=10_000)
+    model.learn(total_timesteps=10_000, callback=checkpoint_callback)
     model.save("as_model")
 
 

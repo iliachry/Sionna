@@ -11,7 +11,7 @@ from stable_baselines3.common.utils import set_random_seed
 from api_env import InnosimAPI
 import requests
 
-ip = "localhost"
+ip = "18.185.87.204"
 set_random_seed(seed = 42)
 
 # The environment class for the RIS simulation

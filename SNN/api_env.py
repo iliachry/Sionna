@@ -84,7 +84,7 @@ class InnosimAPI:
     
 
 """
-innosim = InnosimAPI(ip="3.70.154.180")
+innosim = InnosimAPI(ip="3.70.236.89")
 print(innosim.get_observation())
 
 wait = input("Press Enter to continue...")
