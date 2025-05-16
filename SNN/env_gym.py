@@ -10,8 +10,8 @@ from stable_baselines3.common.utils import set_random_seed
 
 from api_env import InnosimAPI
 
-
 ip = "18.185.87.204" # or "localhost"
+
 set_random_seed(seed = 42)
 
 # The environment class for the RIS simulation
@@ -28,7 +28,9 @@ class RISGymEnvironment(gym.Env):
         self.phase_model = phase_model
 
         self.num_receivers = num_receivers
+
         self.abs_receiver_position_bounds = abs_receiver_position_bounds
+
         self.receiver_height = receiver_height
 
         self.evaluation_positions = []
@@ -141,6 +143,7 @@ class RISGymEnvironment(gym.Env):
         self.innosim.update_association_matrix(action)
         reward = self.innosim.compute_reward_association()
 
+
         self.running_reward += reward
         self.current_step += 1
 
@@ -151,13 +154,16 @@ class RISGymEnvironment(gym.Env):
             truncated = True
 
         observation = self.innosim.get_observation()
+
         observation = self.normalize_obs([pos[:2] for pos in observation])
+
 
         return observation, reward, False, truncated, {}
 
 
     """
     For straight in Sionna, without API
+
 
     def reset_association(self, *, seed=None, options=None):
         super().reset(seed=seed)
@@ -209,6 +215,7 @@ class RISGymEnvironment(gym.Env):
         
         return observation, reward, False, False, {}
     """
+
 
     # CHANGES REQUIRED HERE
 
@@ -289,7 +296,7 @@ class RISGymEnvironment(gym.Env):
         
         return observation, reward, False, False, {}
     
-    
+
     def evaluate(self, model):
 
         for i in range(len(self.evaluation_positions)):
@@ -308,6 +315,7 @@ class RISGymEnvironment(gym.Env):
         print(f"({len(self.data_rate_history)}) Average data rate: {self.running_data_rate/len(self.evaluation_positions)}")
         self.running_data_rate = 0.0
     """
+
 
     def normalize_obs(self, observations):
         obs_min = self.observation_space.low

@@ -59,12 +59,12 @@ elif training_mode == "association":
                 policy_kwargs=dict(mode=training_mode))
 
 
-
     model.learn(total_timesteps=10_000)
     model.save("association_model")
 
 
 # Plotting model performance metrics
+
 reward_history = np.array(env.get_attr("reward_history")[0])
 data_rate_history = np.array(env.get_attr("data_rate_history")[0])  
 

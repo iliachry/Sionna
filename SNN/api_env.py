@@ -5,9 +5,10 @@ class InnosimAPI:
     def __init__(self, ip):
         self.ip = ip
 
-
+        
     def update_association_matrix(self, mapping_array):
             # ris_targets currently dummy values
+
             tx_map = {"ris_targets": [1, 2]} | self.receiver_list_to_dict(mapping_array)
             try:
                 response = requests.post(f"http://{self.ip}:5000/update-association-matrix", json=tx_map)
@@ -17,6 +18,7 @@ class InnosimAPI:
 
 
     def compute_reward_association(self):
+
         try:
             association_resp = requests.get(f"http://{self.ip}:5000/get-association-matrix")
             association_resp.raise_for_status()
@@ -86,5 +88,5 @@ class InnosimAPI:
             rx_key = idx + 1
             tx_map[tx_key].append(rx_key)
         return dict(tx_map)
-
-
+      
+      
