@@ -1,7 +1,6 @@
 from stable_baselines3 import PPO
 from stable_baselines3.common.utils import set_random_seed
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
-from stable_baselines3.common.callbacks import CheckpointCallback
 
 from custom_spiking_nn import CustomActorCriticPolicy
 
@@ -17,17 +16,6 @@ training_mode = "association"               # phase or association training mode
 num_receivers = 10                          # Only used for association mode, otherwise ignored
 ris_dims = [4, 4]                           # Dimensions of the RIS
 abs_receiver_position_bounds = [200, 200]   # Bounds for the absolute receiver positions
-
-
-# To train model for association, phase model must already exist
-# Association model must have the same dimensions and position bounds
-# as the existing phase model
-
-checkpoint_callback = CheckpointCallback(
-    save_freq=100,              # Save every 100 steps
-    save_path='./checkpoints/',  # Directory to save checkpoints
-    name_prefix='ppo_model2'      # File name prefix
-)
 
 
 if training_mode == "phase":
@@ -46,12 +34,13 @@ if training_mode == "phase":
                 n_epochs=3,
                 policy_kwargs=dict(mode=training_mode))
 
-    env.envs[0].evaluate(model)
-    for i in range(80): 
-        model.learn(total_timesteps=1000)
-        env.envs[0].evaluate(model)
+
+    model.learn(total_timesteps=80_000)
+    model.save("phase_model")
+
 
 elif training_mode == "association":
+
     model_p = PPO.load("phase_model")
 
     env = DummyVecEnv([lambda: RISGymEnvironment(num_receivers=num_receivers, mode=training_mode, ris_dims=ris_dims, abs_receiver_position_bounds=abs_receiver_position_bounds, phase_model=model_p)])
@@ -70,10 +59,11 @@ elif training_mode == "association":
                 policy_kwargs=dict(mode=training_mode))
 
 
+    model.learn(total_timesteps=10_000)
+    model.save("association_model")
 
-    model.learn(total_timesteps=10_000, callback=checkpoint_callback)
-    model.save("as_model")
 
+# Plotting model performance metrics
 
 reward_history = np.array(env.get_attr("reward_history")[0])
 data_rate_history = np.array(env.get_attr("data_rate_history")[0])  
