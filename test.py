@@ -62,6 +62,7 @@ class SINROptimizationEnv(gym.Env):
                                         vertical_spacing=0.5,
                                         horizontal_spacing=0.5,
                                         pattern="dipole",
+                                        pattern="dipole",
                                         polarization="V")
         self.scene.rx_array = PlanarArray(num_rows=1, num_cols=1,
                                         vertical_spacing=0.5,
@@ -121,6 +122,7 @@ class SINROptimizationEnv(gym.Env):
     def _calculate_sinr(self):
         """Compute SINR for all receivers"""
         fft_size = 1
+        fft_size = 1
         subcarrier_spacing = 15e3
         channels = []
         
@@ -134,6 +136,7 @@ class SINROptimizationEnv(gym.Env):
         freqs = subcarrier_frequencies(fft_size, subcarrier_spacing)
 
         # Compute the frequency-domain channel
+        h_freq = cir_to_ofdm_channel(freqs, a, tau, normalize=False)
         h_freq = cir_to_ofdm_channel(freqs, a, tau, normalize=False)
 
         # Extract channels for each receiver by expanding the corresponding dimension
