@@ -6,29 +6,42 @@ import snntorch as snn
 from snntorch import surrogate
 from snntorch import utils
 import torch
+import torch.nn.functional as F
 import matplotlib.pyplot as plt
 import time
 import random
 
 # Set random seeds for reproducibility
-sn.config.seed = 42
+np.random.seed(42)
+random.seed(42)
+tf.random.set_seed(42)
 torch.manual_seed(42)
 
 
 # Define the RIS controller as an SNN
+# Treats environment as a grid, uses CNN
+# Architecture too deep, spikes don't make it through
+# Not great option, leaving it for now just in case
 class RISController(torch.nn.Module):
-    def __init__(self, input_size, output_size, hidden_size = 64, options_per_element = 4):
+    def __init__(self, input_size, output_size, hidden_size = 128, options_per_element = 4):
         super().__init__()
         
         self.spike_grad = surrogate.fast_sigmoid()   # Surrogate gradient for spiking
         self.options_per_element = options_per_element                 # Number of actions per RIS element
         self.lif = snn.Leaky(beta=0.9, spike_grad=self.spike_grad)  # Leaky Integrate-and-Fire neuron
-        self.T = 16
+        self.T = 32
         self.input_size = input_size
         self.output_size = output_size
-        
-        self.fc1 = torch.nn.Linear(input_size, hidden_size)
-        self.lif1 = self.lif
+    
+
+        self.conv1 = torch.nn.Conv2d(1, 2, 5)
+        self.lif_conv1 = self.lif
+        self.conv2 = torch.nn.Conv2d(2, 4, 5)
+        self.lif_conv2 = self.lif
+        self.conv3 = torch.nn.Conv2d(4, 6, 5)
+        self.lif_conv3 = self.lif
+        self.fc1 = torch.nn.Linear(300, 128)
+        self.lif_fc1 = self.lif
 
         # Output layers for each RIS element
         self.output_layers = torch.nn.ModuleList([
@@ -41,16 +54,43 @@ class RISController(torch.nn.Module):
         ])
 
     def forward(self, x):
-        mem1 = self.lif1.init_leaky()
+        mem1 = self.lif_conv1.init_leaky()
+        mem2 = self.lif_conv2.init_leaky()
+        mem3 = self.lif_conv3.init_leaky()
+        mem4 = self.lif_fc1.init_leaky()
         output_mems = [lif.init_leaky() for lif in self.lif_output]
         
         spk_rec = [[] for _ in range(self.output_size)]
 
         # Generate spikes through SNN timesteps
         for _ in range(self.T):
-            spk1, mem1 = self.lif1(self.fc1(x), mem1)
+            cur1 = F.max_pool2d(self.conv1(x), 3)
+            print(cur1)
+            spk1, mem1 = self.lif_conv1(cur1, mem1)
+            print(torch.count_nonzero(spk1))
+            wait = input("L1.")
+
+            cur2 = F.max_pool2d(self.conv2(spk1), 2)
+            print(cur2)
+            spk2, mem2 = self.lif_conv2(cur2, mem2)
+            print(torch.count_nonzero(spk2))
+            wait = input("L2.")
+
+            cur3 = F.max_pool2d(self.conv3(spk2), 2)
+            print(cur3)
+            spk3, mem3 = self.lif_conv3(cur3, mem3)
+            print(torch.count_nonzero(spk3))
+            wait = input("L3.")
+
+            cur4 = self.fc1(spk3.view(-1, 300))
+            print(cur4)
+            print(torch.count_nonzero(cur4))
+            spk4, mem4 = self.lif_fc1(cur4, mem4)
+            print(torch.count_nonzero(spk4))
+            wait = input("L4.")
+
             for i in range(self.output_size):
-                spk_out, output_mems[i] = self.lif_output[i](self.output_layers[i](spk1), output_mems[i])
+                spk_out, output_mems[i] = self.lif_output[i](self.output_layers[i](spk4), output_mems[i])
                 spk_rec[i].append(spk_out)
 
         # Sum spikes per element across time steps 
@@ -60,9 +100,7 @@ class RISController(torch.nn.Module):
     
     def get_action(self, state):
         spike_counts = self.forward(state)
-
         log_probs = [torch.nn.functional.log_softmax(counts.squeeze(0), dim=-1) for counts in spike_counts]
-
         actions = []
         action_log_probs = []
 
@@ -70,9 +108,8 @@ class RISController(torch.nn.Module):
             probs = torch.exp(log_probs[i])
             action_dist = torch.distributions.Categorical(probs)
             action = action_dist.sample()
-            
             actions.append(action)
-            action_log_probs.append(log_probs[i].gather(1, action.unsqueeze(1)))
+            action_log_probs.append(log_probs[i].gather(0, action))
 
         return actions, action_log_probs
 
@@ -80,6 +117,7 @@ class RISEnvironment():
     def __init__(self, num_receivers, ris_dims = [3, 3]):
 
         self.num_receivers = num_receivers
+        self.active_receivers = num_receivers
 
         self.scene = sn.rt.load_scene(sn.rt.scene.simple_street_canyon)
         self.scene.tx_array = sn.rt.PlanarArray(num_rows=8,
@@ -94,17 +132,17 @@ class RISEnvironment():
                           horizontal_spacing=0.5,
                           pattern="dipole",
                           polarization="cross")
+        
+        self.grid_dimensions = (80, 50)
+        self.grid = self.create_grid()
+        
 
-        camera = sn.rt.Camera("Cam", [0, 0, 300], look_at=[0, 0, 0])
+        camera = sn.rt.Camera("Cam", [0, 0, 300], orientation=[np.pi/2, np.pi/2, 0])
         self.scene.add(camera)
 
         tx = sn.rt.Transmitter(name="tx", position=[-32,10,32])
         self.scene.add(tx)
 
-        self.rx_positions = self.generate_rx_positions()
-        for i in range(self.num_receivers):
-            rx = sn.rt.Receiver(name=f"rx{i}", position=self.rx_positions[i])
-            self.scene.add(rx) 
 
         self.ris_position = [32, -9, 32]
         self.ris_look_at = [-5, 30, 17]
@@ -118,15 +156,44 @@ class RISEnvironment():
         
         self.scene.add(self.ris)
 
+
+
         self.scene.frequency = 2.4e9
 
 
-    def position_is_blocked(self, x, y):
+    def update_rx_positions(self):
+        z = 5
+        x_min, x_max = -self.grid_dimensions[0], self.grid_dimensions[0]
+        y_min, y_max = -self.grid_dimensions[1], self.grid_dimensions[1]
 
-        # Define invalid positions for receivers
-        # (x1, y1, x2, y2)
-        # (x1, y1) - bottom-left 
-        # (x2, y2) - top-right
+        for i in range(self.active_receivers):
+            x = random.randint(x_min, x_max)
+            y = random.randint(y_min, y_max)
+            grid_y, grid_x = self.world_to_grid(x, y)
+            while self.grid[grid_y, grid_x] == -1 or self.grid[grid_y, grid_x] == 1:
+                x = random.randint(x_min, x_max)
+                y = random.randint(y_min, y_max)
+                grid_y, grid_x = self.world_to_grid(x, y)
+
+            rx = sn.rt.Receiver(name=f"rx{i}", position=[x, y, z])
+            self.scene.add(rx)
+            self.grid[grid_y, grid_x] = 10.0
+
+
+    def world_to_grid(self, x, y):
+        return y + self.grid_dimensions[1], x + self.grid_dimensions[0]   
+
+
+    def create_grid(self):
+        x_min, x_max = -self.grid_dimensions[0], self.grid_dimensions[0]
+        y_min, y_max = -self.grid_dimensions[1], self.grid_dimensions[1]
+
+        grid_width = x_max - x_min + 1 
+        grid_height = y_max - y_min + 1
+
+        grid = torch.zeros((grid_height, grid_width), dtype=torch.float)
+    
+
         invalid_positions = [
             (28, 50, 80, 5),
             (28, -5, 80, -50),
@@ -137,27 +204,19 @@ class RISEnvironment():
         ]
 
         for (x1, y1, x2, y2) in invalid_positions:
-            if x1 <= x < x2 and y2 <= y < y1:
-                return True
-        return False
+            y1_idx, x1_idx = self.world_to_grid(x1, y1)
+            y2_idx, x2_idx = self.world_to_grid(x2, y2)
 
+            grid[y2_idx:y1_idx+1, x1_idx:x2_idx+1] = -1.0
 
-    def generate_rx_positions(self):
-        max_abs_x = 80
-        max_abs_y = 50
-        z = 5
-
-        rx_positions = []
-
-        for i in range(self.num_receivers):
-            random_x = random.uniform(-max_abs_x, max_abs_x)
-            random_y = random.uniform(-max_abs_y, max_abs_y)
-            while self.position_is_blocked(random_x, random_y):
-                random_x = random.uniform(-max_abs_x, max_abs_x)
-                random_y = random.uniform(-max_abs_y, max_abs_y)
-            rx_positions.append([random_x, random_y, z])
-        return rx_positions
+        return grid
     
+
+    def clear_rx(self):
+        for i in range(self.active_receivers):
+            self.scene.remove(f"rx{i}")
+        self.grid = self.create_grid()
+
 
     def remove_nans(self, tensor):
         if tensor.dtype in (tf.complex64, tf.complex128):
@@ -180,12 +239,8 @@ class RISEnvironment():
 
         return cleaned_tensor
 
-    def update_rx_positions(self, rx_positions):
-        for i in range(self.num_receivers):
-            self.scene.get(f"rx{i}").position = rx_positions[i]
 
-
-    def compute_channel_gains(self, a, tau, rx_using_ris, ris=False):
+    def compute_channel_gains(self, a, tau):
         fft_size = 1
         subcarrier_spacing = 15e3
         channels = []
@@ -195,12 +250,10 @@ class RISEnvironment():
 
         # Compute the frequency-domain channel
         h_freq = cir_to_ofdm_channel(freqs, a, tau, normalize=False)
-
-        for i in range(self.num_receivers):
-            if rx_using_ris[i] == ris:
-                h_freq_i = h_freq[:, i, :, :, :, :, :]
-                channel_i = tf.reduce_mean(tf.abs(h_freq_i) ** 2)
-                channels.append(channel_i)
+        for i in range(self.active_receivers):
+            h_freq_i = h_freq[:, i, :, :, :, :, :]
+            channel_i = tf.reduce_mean(tf.abs(h_freq_i) ** 2)
+            channels.append(channel_i)
 
         return channels    
 
@@ -218,7 +271,7 @@ class RISEnvironment():
 
 
     # Utility function to compute received power
-    def calculate_reward(self, rx_using_ris):
+    def calculate_reward(self):
         
         paths = self.scene.compute_paths(max_depth=3, los=True, reflection=True, ris=True)
 
@@ -253,8 +306,8 @@ class RISEnvironment():
         tau_ris = tau_ris_reflection
 
         
-        channels = self.compute_channel_gains(a_no_ris, tau_no_ris, rx_using_ris, ris=False)
-        channels_ris = self.compute_channel_gains(a_ris, tau_ris, rx_using_ris, ris=True)
+        channels = self.compute_channel_gains(a_no_ris, tau_no_ris)
+        channels_ris = self.compute_channel_gains(a_ris, tau_ris)
 
 
         total_data_rates = self.compute_data_rates(channels)
@@ -275,13 +328,21 @@ ris_dims = [3, 3]
 input_size = num_receivers * 3 + num_receivers
 output_size = ris_dims[0] * ris_dims[1]
 
+
+
 net = RISController(input_size=input_size, output_size=output_size)
 env = RISEnvironment(num_receivers=num_receivers, ris_dims=[3, 3])
-
+sn.rt.Scene.render_to_file(self=env.scene, camera="Cam", filename="scene.png")
 optimizer = torch.optim.Adam(net.parameters(), lr=0.001)
 
+"""
+plt.figure(figsize=(8, 8))
+plt.imshow(env.grid, cmap="gray", origin="upper")
+plt.show()
+"""
+
 # Training loop
-num_steps = 20000
+num_steps = 30001
 batch_size = 128
 
 log_prob_batch = []
@@ -292,19 +353,24 @@ state_batch = []
 # Mean rewards for plotting
 mean_rewards = []
 
+mean_test_rewards = []
+test_rx_pos = []
+test_rx_using_ris = []
+current_test = 0
+
+"""
+for i in range(256):
+    test_rx_pos.append(env.generate_rx_positions())
+    test_rx_using_ris.append([1] + [random.choice([0, 1]) for _ in range(num_receivers - 1)])
+    random.shuffle(test_rx_using_ris[i])
+"""
+
 for step in range(num_steps):
-    rx_pos = env.generate_rx_positions()
-    env.update_rx_positions(rx_pos)
 
-    # Generate dummy association matrix randomly
-    rx_using_ris = [1] + [random.choice([0, 1]) for _ in range(num_receivers - 1)]
-    random.shuffle(rx_using_ris)
+    env.active_receivers = random.randint(1, env.num_receivers)
+    env.update_rx_positions()
 
-    rx_pos_tensor = torch.tensor(rx_pos, dtype=torch.float32).flatten()
-    rx_using_ris_tensor = torch.tensor(rx_using_ris, dtype=torch.float32).flatten()
-
-
-    state = torch.cat((rx_pos_tensor, rx_using_ris_tensor)).unsqueeze(0)[None, :]
+    state = env.grid.unsqueeze(0)[None, :]
 
     action, log_probs_per_element = net.get_action(state)
     
@@ -314,8 +380,7 @@ for step in range(num_steps):
 
     env.ris.phase_profile.values = tf.reshape(tf.convert_to_tensor(phase_shift), [1, ris_dims[0], ris_dims[1]])
 
-    _, reward = env.calculate_reward(rx_using_ris)
-
+    _, reward = env.calculate_reward()
 
     log_prob_batch.append(log_prob)
     action_batch.append(action)
@@ -328,9 +393,9 @@ for step in range(num_steps):
         mean_reward = rewards.mean()
         std_reward = rewards.std()
         normalized_rewards = (rewards - mean_reward) / (std_reward + 1e-6)
+        print(torch.stack(log_prob_batch))
         loss = -torch.stack(log_prob_batch) * normalized_rewards
         loss = loss.mean()
-
         # Backpropagation
         optimizer.zero_grad()
         loss.backward()
@@ -344,10 +409,39 @@ for step in range(num_steps):
         action_batch = []
         reward_batch = []
         state_batch = []
-        
+
+    env.clear_rx()
+
+"""
+    if step % 3000 == 0:
+        test_rewards = []
+        for i in range(len(test_rx_pos)):
+            env.update_rx_positions(test_rx_pos[i])
+            state = torch.cat((torch.tensor(test_rx_pos[i], dtype=torch.float32).flatten(), torch.tensor(test_rx_using_ris[i], dtype=torch.float32).flatten())).unsqueeze(0)[None, :]
+            action, _ = net.get_action(state)
+            phase_shift = action_to_phase(action)
+            env.ris.phase_profile.values = tf.reshape(tf.convert_to_tensor(phase_shift), [1, ris_dims[0], ris_dims[1]])
+            _, reward = env.calculate_reward(test_rx_using_ris[i])
+            test_rewards.append(sum(reward)*100)
+
+
+        mean_test_rewards.append(np.mean(test_rewards))
+        plt.plot(test_rewards)
+        plt.savefig(f"test_{current_test}.png")
+        plt.clf()
+        torch.save(net.state_dict(), f"snn_model{current_test}.pth")
+        current_test += 1
+""" 
 
 # Plot the mean rewards over time
 plt.plot(mean_rewards)
 plt.xlabel("Step")
 plt.ylabel("Mean Reward")
 plt.savefig("mean_rewards.png")
+plt.clf()
+
+plt.plot(mean_test_rewards)
+plt.xlabel("Test")
+plt.ylabel("Mean Reward")
+plt.savefig("mean_test_rewards.png")
+plt.clf()
