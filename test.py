@@ -1,19 +1,23 @@
 import os
 
-# Enable GPU usage
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+# # Enable GPU usage
+# os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
-# Check if GPU is available
+# # Check if GPU is available
+# import tensorflow as tf
+# gpus = tf.config.list_physical_devices('GPU')
+# if gpus:
+#     try:
+#         tf.config.experimental.set_memory_growth(gpus[0], True)
+#         print("GPU set up and using memory growth.")
+#     except RuntimeError as e:
+#         print("Error setting memory growth:", e)
+# else:
+#     print("No GPU detected. Using CPU.")
+
 import tensorflow as tf
-gpus = tf.config.list_physical_devices('GPU')
-if gpus:
-    try:
-        tf.config.experimental.set_memory_growth(gpus[0], True)
-        print("GPU set up and using memory growth.")
-    except RuntimeError as e:
-        print("Error setting memory growth:", e)
-else:
-    print("No GPU detected. Using CPU.")
+print("Num GPUs Available: ", len(tf.config.list_physical_devices('GPU')))
+print(tf.config.list_physical_devices())
 
 import numpy as np
 import csv
@@ -21,8 +25,8 @@ import matplotlib.pyplot as plt
 import time
 
 import sionna
-from sionna.rt import load_scene, Transmitter, Receiver, PlanarArray
-from sionna.channel import cir_to_ofdm_channel, subcarrier_frequencies
+from sionna.rt import load_scene, Transmitter, Receiver, PlanarArray, PathSolver
+from sionna.phy.channel.generate_ofdm_channel import cir_to_ofdm_channel, subcarrier_frequencies
 
 import gymnasium as gym
 from gymnasium import spaces
@@ -62,7 +66,6 @@ class SINROptimizationEnv(gym.Env):
                                         vertical_spacing=0.5,
                                         horizontal_spacing=0.5,
                                         pattern="dipole",
-                                        pattern="dipole",
                                         polarization="V")
         self.scene.rx_array = PlanarArray(num_rows=1, num_cols=1,
                                         vertical_spacing=0.5,
@@ -91,7 +94,6 @@ class SINROptimizationEnv(gym.Env):
         self.action_history = []
         self.state_history = []
 
-
     def reset(self, seed=None, options=None):
         """Reset environment to initial state"""
         
@@ -105,73 +107,78 @@ class SINROptimizationEnv(gym.Env):
 
     def _get_state(self):
         """Create state vector from current positions"""
-        state = np.concatenate([
-            self.uav.position,
-            *[rx.position for rx in self.receivers]
-        ])
-        state = self.uav.position
-        return tf.convert_to_tensor(state, dtype=tf.float32)
+        # Get UAV position coordinates
+        x = float(self.uav.position.x[0])
+        y = float(self.uav.position.y[0])
+        z = float(self.uav.position.z[0])
+        
+        state = np.array([x, y, z], dtype=np.float64)
+        return state
 
     def _move_receivers(self):
         """Random ground receiver movement"""
         for rx in self.receivers:
-            new_pos = rx.position._numpy()
+            new_pos = np.array(rx.position._numpy).copy()
             new_pos[:2] += np.random.uniform(-2, 2, size=2)
             rx.position = new_pos
 
     def _calculate_sinr(self):
         """Compute SINR for all receivers"""
-        fft_size = 1
-        fft_size = 1
-        subcarrier_spacing = 15e3
-        channels = []
-        
         start_time = time.time()
-        paths = self.scene.compute_paths(max_depth=2, num_samples=1e6, check_scene=False)
-        print(f"Path computation time: {time.time() - start_time:.2f} seconds")
 
-        a, tau = paths.cir()
+        # 1. Instantiate and run the PathSolver
+        p_solver = PathSolver()
+        paths = p_solver(scene=self.scene, max_depth=2)
+        #print(f"Path computation time: {time.time() - start_time:.2f} seconds")
 
-        # Define OFDM parameters
-        freqs = subcarrier_frequencies(fft_size, subcarrier_spacing)
+        # 2. Get the CIR. `a` could be a Dr.Jit tensor or an empty list.
+        a, _ = paths.cir()
 
-        # Compute the frequency-domain channel
-        h_freq = cir_to_ofdm_channel(freqs, a, tau, normalize=False)
-        h_freq = cir_to_ofdm_channel(freqs, a, tau, normalize=False)
+        # 3. Handle the "zero paths found" edge case first.
+        if len(a) == 0:
+            num_receivers = len(self.receivers)
+            sinrs_np = [-float('inf')] * num_receivers
+            total_data_rates_np = [0.0] * num_receivers
+            return sinrs_np, total_data_rates_np
 
-        # Extract channels for each receiver by expanding the corresponding dimension
-        h_freq_0 = tf.expand_dims(h_freq[:, 0, :, :, :, :, :], axis=1)
-        h_freq_1 = tf.expand_dims(h_freq[:, 1, :, :, :, :, :], axis=1)
-        h_freq_2 = tf.expand_dims(h_freq[:, 2, :, :, :, :, :], axis=1)
+        # 4. If paths were found, proceed with TensorFlow.
+        a = tf.convert_to_tensor(a)
 
-        # Compute the channel gain as the average of the absolute squared channel coefficients
-        channel_0 = tf.reduce_mean(tf.abs(h_freq_0) ** 2)
-        channel_1 = tf.reduce_mean(tf.abs(h_freq_1) ** 2)
-        channel_2 = tf.reduce_mean(tf.abs(h_freq_2) ** 2)
-        channels = [channel_0, channel_1, channel_2]
+        # 5. Calculate power for each path and sum to get channel gain.
+        path_powers = tf.math.abs(a)**2
+        channel_gains = tf.reduce_sum(path_powers, axis=2)
 
-        # channel_per_subcarrier_0 = tf.abs(h_freq_0) ** 2
-        # channel_per_subcarrier_1 = tf.abs(h_freq_1) ** 2
-        # channel_per_subcarrier_2 = tf.abs(h_freq_2) ** 2
+        # --- NEW, SIMPLER, AND MORE ROBUST PADDING ---
 
-        # Calculate SINR for each receiver
-        epsilon = 1e-10  # Small constant to avoid log(0)
-        sinrs = []
-        total_data_rates = []
-        for i in range(3):
-            desired = tf.maximum(channels[i], epsilon)
-            interference = sum(channels[:i] + channels[i+1:])
-            
-            sinr = desired / (self.noise_power + tf.maximum(interference, epsilon))
-            
-            sinr_db = 10 * tf.math.log(sinr + epsilon) / tf.math.log(10.0)
-            
-            total_data_rate = tf.math.log(1 + sinr) / tf.math.log(2.0)
-            
-            total_data_rates.append(total_data_rate.numpy())
-            sinrs.append(sinr_db.numpy())
+        # 6. Flatten the gains tensor into a 1D vector of found gains.
+        # This resolves all shape inconsistencies.
+        flat_gains = tf.reshape(channel_gains, [-1])
 
-        return sinrs, total_data_rates
+        # 7. Create padding configuration for the 1D vector.
+        num_receivers = len(self.receivers)
+        num_found = tf.shape(flat_gains)[0]
+        paddings = [[0, num_receivers - num_found]]
+
+        # 8. Pad the 1D vector. The result is a dense 1D tensor of shape [3].
+        dense_gains = tf.pad(flat_gains, paddings, "CONSTANT", constant_values=0)
+
+        # --- END OF NEW LOGIC ---
+
+        # 9. Vectorized SINR and Data Rate Calculation (this part is unchanged)
+        epsilon = 1e-10
+        total_power = tf.reduce_sum(dense_gains)
+        interference = total_power - dense_gains
+        
+        sinr = dense_gains / (self.noise_power + tf.maximum(interference, epsilon))
+        
+        sinr_db = 10 * tf.math.log(sinr + epsilon) / tf.math.log(10.0)
+        total_data_rate = tf.math.log(1.0 + sinr) / tf.math.log(2.0)
+
+        # Convert final tensors to numpy arrays
+        sinrs_np = sinr_db.numpy()
+        total_data_rates_np = total_data_rate.numpy()
+
+        return sinrs_np.tolist(), total_data_rates_np.tolist()
 
     def step(self, action):
         """Execute one timestep with UAV movement"""
