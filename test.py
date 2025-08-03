@@ -124,7 +124,7 @@ class SINROptimizationEnv(gym.Env):
 
     def _calculate_sinr(self):
         """Compute SINR for all receivers"""
-        start_time = time.time()
+        #start_time = time.time()
 
         # 1. Instantiate and run the PathSolver
         p_solver = PathSolver()
@@ -148,8 +148,6 @@ class SINROptimizationEnv(gym.Env):
         path_powers = tf.math.abs(a)**2
         channel_gains = tf.reduce_sum(path_powers, axis=2)
 
-        # --- NEW, SIMPLER, AND MORE ROBUST PADDING ---
-
         # 6. Flatten the gains tensor into a 1D vector of found gains.
         # This resolves all shape inconsistencies.
         flat_gains = tf.reshape(channel_gains, [-1])
@@ -161,8 +159,6 @@ class SINROptimizationEnv(gym.Env):
 
         # 8. Pad the 1D vector. The result is a dense 1D tensor of shape [3].
         dense_gains = tf.pad(flat_gains, paddings, "CONSTANT", constant_values=0)
-
-        # --- END OF NEW LOGIC ---
 
         # 9. Vectorized SINR and Data Rate Calculation (this part is unchanged)
         epsilon = 1e-10
